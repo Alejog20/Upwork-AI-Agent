@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from hermes.config.profile import RepoConfig
-from hermes.models import RepoMatch
+from ulysses.config.profile import RepoConfig
+from ulysses.models import RepoMatch
 
 __all__ = ["rank_matching_repos"]
 

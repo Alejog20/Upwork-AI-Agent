@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the Hermes test suite."""
+"""Shared pytest fixtures for the Ulysses test suite."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from hermes.config.profile import (
+from ulysses.config.profile import (
     AlertsConfig,
     FreelancerProfile,
     Profile,
@@ -14,7 +14,7 @@ from hermes.config.profile import (
     ScoringConfig,
     SkillsConfig,
 )
-from hermes.models import BudgetRange, BudgetType, JobPost
+from ulysses.models import BudgetRange, BudgetType, JobPost
 
 
 @pytest.fixture

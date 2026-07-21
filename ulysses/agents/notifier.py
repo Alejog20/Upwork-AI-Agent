@@ -18,9 +18,9 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler, ContextTypes
 
-from hermes.config.profile import ScoringConfig
-from hermes.models import JobPost, JobScore, Recommendation
-from hermes.tools.db import HermesDB, JobStatus
+from ulysses.config.profile import ScoringConfig
+from ulysses.models import JobPost, JobScore, Recommendation
+from ulysses.tools.db import JobStatus, UlyssesDB
 
 __all__ = ["NotifierAgent", "format_job_message"]
 
@@ -40,7 +40,7 @@ _ACTION_STATUS: dict[str, JobStatus] = {
 class NotifierAgent:
     """Sends scored jobs to a single Telegram chat and handles button presses."""
 
-    def __init__(self, bot_token: str, chat_id: str, db: HermesDB) -> None:
+    def __init__(self, bot_token: str, chat_id: str, db: UlyssesDB) -> None:
         """Create a Notifier Agent bound to one Telegram chat.
 
         Args:
@@ -128,7 +128,7 @@ class NotifierAgent:
 
 
 def format_job_message(job: JobPost, score: JobScore) -> str:
-    """Render a scored job into the exact Telegram alert format Hermes uses."""
+    """Render a scored job into the exact Telegram alert format Ulysses uses."""
     recommendation_label = {
         Recommendation.APPLY_NOW: "APPLY NOW",
         Recommendation.REVIEW: "REVIEW",

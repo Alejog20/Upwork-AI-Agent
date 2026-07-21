@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 from bs4 import BeautifulSoup
 
-from hermes.models import BudgetRange, BudgetType, JobPost
+from ulysses.models import BudgetRange, BudgetType, JobPost
 
 __all__ = ["JobParseError", "parse_job_email"]
 

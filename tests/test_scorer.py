@@ -1,4 +1,4 @@
-"""Unit tests for the pure scoring engine in `hermes.agents.scorer`."""
+"""Unit tests for the pure scoring engine in `ulysses.agents.scorer`."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from hermes.agents.scorer import score_job
-from hermes.config.profile import Profile
-from hermes.models import BudgetRange, BudgetType, GigCategory, JobPost, Recommendation
+from ulysses.agents.scorer import score_job
+from ulysses.config.profile import Profile
+from ulysses.models import BudgetRange, BudgetType, GigCategory, JobPost, Recommendation
 
 
 def _job(fresh_job: JobPost, **overrides: object) -> JobPost:

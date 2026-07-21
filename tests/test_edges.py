@@ -1,14 +1,14 @@
-"""Tests for the conditional routing logic in `hermes.graph.edges`."""
+"""Tests for the conditional routing logic in `ulysses.graph.edges`."""
 
 from __future__ import annotations
 
 from langgraph.types import Send
 
-from hermes.graph.edges import route_user_action
-from hermes.graph.state import HermesState
+from ulysses.graph.edges import route_user_action
+from ulysses.graph.state import UlyssesState
 
 
-def _state(user_action: str | None) -> HermesState:
+def _state(user_action: str | None) -> UlyssesState:
     return {
         "job": None,
         "score": None,

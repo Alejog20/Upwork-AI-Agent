@@ -2,7 +2,7 @@
 
 Credentials and infrastructure config (IMAP, Telegram, LLM, file paths) live here.
 Freelancer profile data (skills, repos, scoring thresholds) lives in `profile.yaml`
-and is loaded separately via `hermes.config.profile.load_profile`.
+and is loaded separately via `ulysses.config.profile.load_profile`.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        env_prefix="HERMES_",
+        env_prefix="ULYSSES_",
         extra="ignore",
     )
 
@@ -51,13 +51,13 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     telegram_chat_id: str
 
-    # LLM (see `hermes.tools.llm.get_llm` — added in Phase 2)
+    # LLM (see `ulysses.tools.llm.get_llm` — added in Phase 2)
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
     llm_base_url: str | None = None
 
     # Paths
-    hermes_home: Path = Path.home() / ".hermes"
+    ulysses_home: Path = Path.home() / ".ulysses"
     profile_path: Path = Path(__file__).resolve().parent / "profile.yaml"
 
     # Scout polling
@@ -71,17 +71,17 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         """Path to the SQLite database file."""
-        return self.hermes_home / "hermes.db"
+        return self.ulysses_home / "ulysses.db"
 
     @property
     def log_dir(self) -> Path:
         """Directory where rotating log files are written."""
-        return self.hermes_home / "logs"
+        return self.ulysses_home / "logs"
 
     @property
     def log_path(self) -> Path:
-        """Path to the main Hermes log file."""
-        return self.log_dir / "hermes.log"
+        """Path to the main Ulysses log file."""
+        return self.log_dir / "ulysses.log"
 
 
 @lru_cache

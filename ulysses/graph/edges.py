@@ -1,10 +1,10 @@
-"""Conditional routing logic for the Hermes LangGraph pipeline."""
+"""Conditional routing logic for the Ulysses LangGraph pipeline."""
 
 from __future__ import annotations
 
 from langgraph.types import Send
 
-from hermes.graph.state import HermesState
+from ulysses.graph.state import UlyssesState
 
 __all__ = ["ROUTE_MAP", "route_user_action"]
 
@@ -17,7 +17,7 @@ ROUTE_MAP: dict[str, str | list[str]] = {
 }
 
 
-def route_user_action(state: HermesState) -> str | list[Send]:
+def route_user_action(state: UlyssesState) -> str | list[Send]:
     """Route from `notifier` to `proposal`/`prototype`/`done` based on `state["user_action"]`.
 
     Returns a single node name for `draft`/`build`/`skip`/`archive`, or a list

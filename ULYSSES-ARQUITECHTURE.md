@@ -1,15 +1,15 @@
-# Hermes — Multi-Agent Ecosystem Architecture
+# Ulysses — Multi-Agent Ecosystem Architecture
 *Stack: Python 3.14 · LangGraph · Telegram Bot API · Step 3.7 (LLM) · IMAP/RSS*
 
 ---
 
 ## System Overview
 
-Hermes is an orchestrated pipeline of 5 specialized agents that work together: one watches for gigs, one scores them, one notifies you, one writes proposals, and one builds demo prototypes. You interact entirely through Telegram inline buttons or the Python CLI.
+Ulysses is an orchestrated pipeline of 5 specialized agents that work together: one watches for gigs, one scores them, one notifies you, one writes proposals, and one builds demo prototypes. You interact entirely through Telegram inline buttons or the Python CLI.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        HERMES ECOSYSTEM                         │
+│                        ULYSSES ECOSYSTEM                         │
 │                                                                 │
 │  ┌──────────┐    ┌──────────┐    ┌──────────────────────────┐  │
 │  │  SCOUT   │───▶│  SCORER  │───▶│       NOTIFIER           │  │
@@ -194,7 +194,7 @@ Timeline: 3 days | Bid: $120
 
 **Output (sent as Telegram document zip):**
 ```
-hermes_demo_[job_id]/
+ulysses_demo_[job_id]/
 ├── demo.py          # Working script demonstrating the core concept
 ├── requirements.txt # All dependencies pinned
 ├── README.md        # What it does, how to run it, how to extend it
@@ -234,7 +234,7 @@ python demo.py
 ## LangGraph State Machine
 
 ```python
-class HermesState(TypedDict):
+class UlyssesState(TypedDict):
     job: JobPost
     score: JobScore
     user_action: Literal["draft", "build", "both", "skip", "archive"] | None
@@ -244,7 +244,7 @@ class HermesState(TypedDict):
     completed: bool
 
 # Graph nodes
-graph = StateGraph(HermesState)
+graph = StateGraph(UlyssesState)
 graph.add_node("scout", scout_agent)
 graph.add_node("scorer", scorer_agent)
 graph.add_node("notifier", notifier_agent)
@@ -279,31 +279,31 @@ graph.add_interrupt("notifier")  # LangGraph interrupt point
 
 ```bash
 # Start the full monitoring loop
-hermes start
+ulysses start
 
 # Score a specific job URL manually
-hermes score https://www.upwork.com/jobs/~01234567890
+ulysses score https://www.upwork.com/jobs/~01234567890
 
 # Draft a proposal for a specific job
-hermes draft https://www.upwork.com/jobs/~01234567890
+ulysses draft https://www.upwork.com/jobs/~01234567890
 
 # Build a demo prototype for a specific job
-hermes build https://www.upwork.com/jobs/~01234567890
+ulysses build https://www.upwork.com/jobs/~01234567890
 
 # Do both draft + build
-hermes go https://www.upwork.com/jobs/~01234567890
+ulysses go https://www.upwork.com/jobs/~01234567890
 
 # Show job queue and stats
-hermes status
+ulysses status
 
 # Show recent jobs by score
-hermes queue --min-score 70
+ulysses queue --min-score 70
 
 # Archive a job
-hermes archive <job_id>
+ulysses archive <job_id>
 
 # Set your profile config (skills, repos, rate)
-hermes config set --rate 25 --skills "python,fastapi,scraping,automation"
+ulysses config set --rate 25 --skills "python,fastapi,scraping,automation"
 ```
 
 ---
@@ -311,7 +311,7 @@ hermes config set --rate 25 --skills "python,fastapi,scraping,automation"
 ## Project File Structure
 
 ```
-hermes/
+ulysses/
 ├── agents/
 │   ├── __init__.py
 │   ├── scout.py          # Email/RSS watcher + parser
@@ -322,7 +322,7 @@ hermes/
 │
 ├── graph/
 │   ├── __init__.py
-│   ├── state.py          # HermesState TypedDict
+│   ├── state.py          # UlyssesState TypedDict
 │   ├── nodes.py          # Node wrappers for each agent
 │   ├── edges.py          # Routing logic
 │   └── graph.py          # LangGraph StateGraph assembly
@@ -372,7 +372,7 @@ hermes/
 ## Configuration (profile.yaml)
 
 ```yaml
-# Your Upwork profile configuration — Hermes uses this for scoring and proposals
+# Your Upwork profile configuration — Ulysses uses this for scoring and proposals
 freelancer:
   name: "Alejandro García"
   title: "I automate the boring stuff — Python scripts, scrapers, and AI pipelines"
@@ -472,7 +472,7 @@ LLM-powered proposal drafts sent to Telegram. Template library per job category.
 Demo script generator from job description. Zip sent as Telegram document.
 
 ### Phase 4 — CLI Polish (Week 4)
-Full Typer CLI. `hermes score`, `hermes draft`, `hermes build`, `hermes status`.
+Full Typer CLI. `ulysses score`, `ulysses draft`, `ulysses build`, `ulysses status`.
 
 ### Phase 5 — Intelligence Upgrades (Ongoing)
 - Fine-tune scoring weights based on your actual win rate

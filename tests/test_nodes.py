@@ -1,4 +1,4 @@
-"""Tests for the LangGraph node factories in `hermes.graph.nodes`."""
+"""Tests for the LangGraph node factories in `ulysses.graph.nodes`."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from hermes.agents.scorer import score_job
-from hermes.config.profile import Profile
-from hermes.graph.nodes import (
+from ulysses.agents.scorer import score_job
+from ulysses.config.profile import Profile
+from ulysses.graph.nodes import (
     build_done_node,
     build_notifier_node,
     build_proposal_node,
@@ -16,12 +16,12 @@ from hermes.graph.nodes import (
     build_scorer_node,
     build_scout_node,
 )
-from hermes.graph.state import HermesState
-from hermes.models import JobPost
+from ulysses.graph.state import UlyssesState
+from ulysses.models import JobPost
 
 
-def _state(job: JobPost, **overrides: object) -> HermesState:
-    base: HermesState = {
+def _state(job: JobPost, **overrides: object) -> UlyssesState:
+    base: UlyssesState = {
         "job": job,
         "score": None,
         "user_action": None,

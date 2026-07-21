@@ -12,12 +12,12 @@ from collections.abc import Awaitable, Callable
 
 from loguru import logger
 
-from hermes.agents.scorer import score_job
-from hermes.config.profile import Profile
-from hermes.models import JobPost, JobScore
-from hermes.tools.db import HermesDB, Job, JobStatus
-from hermes.tools.email_reader import EmailReader
-from hermes.tools.job_parser import parse_job_email
+from ulysses.agents.scorer import score_job
+from ulysses.config.profile import Profile
+from ulysses.models import JobPost, JobScore
+from ulysses.tools.db import Job, JobStatus, UlyssesDB
+from ulysses.tools.email_reader import EmailReader
+from ulysses.tools.job_parser import parse_job_email
 
 __all__ = ["ScoredJobCallback", "ScoutAgent"]
 
@@ -27,7 +27,7 @@ ScoredJobCallback = Callable[[JobPost, JobScore], Awaitable[None]]
 class ScoutAgent:
     """Polls the mailbox for new Upwork jobs and pushes scored, deduped jobs onward."""
 
-    def __init__(self, email_reader: EmailReader, db: HermesDB, profile: Profile) -> None:
+    def __init__(self, email_reader: EmailReader, db: UlyssesDB, profile: Profile) -> None:
         """Create a Scout Agent.
 
         Args:

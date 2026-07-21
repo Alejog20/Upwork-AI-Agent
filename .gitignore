@@ -10,8 +10,8 @@ wheels/
 .venv
 .env
 
-# Hermes runtime data (DB, logs, output artifacts) and ruff cache
-.hermes/
+# Ulysses runtime data (DB, logs, output artifacts) and ruff cache
+.ulysses/
 .ruff_cache/
 .pytest_cache/
 .coverage

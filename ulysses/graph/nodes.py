@@ -1,7 +1,7 @@
-"""Node functions for the Hermes LangGraph pipeline.
+"""Node functions for the Ulysses LangGraph pipeline.
 
 Each `build_*_node` factory closes over its dependencies (profile, DB, agent
-instances) and returns a plain async function of `HermesState -> HermesState`,
+instances) and returns a plain async function of `UlyssesState -> UlyssesState`,
 per LangGraph's node contract. This keeps dependency injection explicit
 (constructor-style, via closures) instead of importing global singletons.
 """
@@ -12,10 +12,10 @@ from collections.abc import Awaitable, Callable
 
 from loguru import logger
 
-from hermes.agents.notifier import NotifierAgent
-from hermes.agents.scorer import score_job
-from hermes.config.profile import Profile
-from hermes.graph.state import HermesState
+from ulysses.agents.notifier import NotifierAgent
+from ulysses.agents.scorer import score_job
+from ulysses.config.profile import Profile
+from ulysses.graph.state import UlyssesState
 
 __all__ = [
     "build_done_node",
@@ -26,7 +26,7 @@ __all__ = [
     "build_scout_node",
 ]
 
-GraphNode = Callable[[HermesState], Awaitable[HermesState]]
+GraphNode = Callable[[UlyssesState], Awaitable[UlyssesState]]
 
 
 def build_scout_node() -> GraphNode:
@@ -38,7 +38,7 @@ def build_scout_node() -> GraphNode:
     state by the time the graph runs.
     """
 
-    async def scout_node(state: HermesState) -> HermesState:
+    async def scout_node(state: UlyssesState) -> UlyssesState:
         logger.bind(job_id=state["job"].id, agent="scout").debug("Job entering graph")
         return state
 
@@ -48,7 +48,7 @@ def build_scout_node() -> GraphNode:
 def build_scorer_node(profile: Profile) -> GraphNode:
     """Build the `scorer` node, bound to a freelancer `Profile`."""
 
-    async def scorer_node(state: HermesState) -> HermesState:
+    async def scorer_node(state: UlyssesState) -> UlyssesState:
         score = score_job(state["job"], profile)
         logger.bind(job_id=state["job"].id, agent="scorer").info(
             "Scored {}/100 -> {}", score.total_score, score.recommendation.value
@@ -61,7 +61,7 @@ def build_scorer_node(profile: Profile) -> GraphNode:
 def build_notifier_node(notifier: NotifierAgent, profile: Profile) -> GraphNode:
     """Build the `notifier` node. This is the graph's human-in-the-loop interrupt point."""
 
-    async def notifier_node(state: HermesState) -> HermesState:
+    async def notifier_node(state: UlyssesState) -> UlyssesState:
         score = state["score"]
         if score is None:
             raise ValueError("notifier_node requires state['score'] to be set by scorer_node first")
@@ -74,7 +74,7 @@ def build_notifier_node(notifier: NotifierAgent, profile: Profile) -> GraphNode:
 def build_proposal_node() -> GraphNode:
     """Build the `proposal` node. Stubbed until Phase 2 implements the Proposal Agent."""
 
-    async def proposal_node(state: HermesState) -> HermesState:
+    async def proposal_node(state: UlyssesState) -> UlyssesState:
         logger.bind(job_id=state["job"].id, agent="proposal").warning(
             "Proposal Agent not implemented until Phase 2; skipping"
         )
@@ -86,7 +86,7 @@ def build_proposal_node() -> GraphNode:
 def build_prototype_node() -> GraphNode:
     """Build the `prototype` node. Stubbed until Phase 3 implements the Prototype Agent."""
 
-    async def prototype_node(state: HermesState) -> HermesState:
+    async def prototype_node(state: UlyssesState) -> UlyssesState:
         logger.bind(job_id=state["job"].id, agent="prototype").warning(
             "Prototype Agent not implemented until Phase 3; skipping"
         )
@@ -98,7 +98,7 @@ def build_prototype_node() -> GraphNode:
 def build_done_node() -> GraphNode:
     """Build the terminal `done` node."""
 
-    async def done_node(state: HermesState) -> HermesState:
+    async def done_node(state: UlyssesState) -> UlyssesState:
         logger.bind(job_id=state["job"].id, agent="graph").debug("Job pipeline complete")
         return {**state, "completed": True}
 

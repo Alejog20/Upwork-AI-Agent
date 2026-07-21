@@ -1,4 +1,4 @@
-"""Tests for `hermes.agents.scout.ScoutAgent`, with a mocked `EmailReader`."""
+"""Tests for `ulysses.agents.scout.ScoutAgent`, with a mocked `EmailReader`."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from hermes.agents.scout import ScoutAgent
-from hermes.config.profile import Profile
-from hermes.tools.db import HermesDB
-from hermes.tools.email_reader import RawEmail
+from ulysses.agents.scout import ScoutAgent
+from ulysses.config.profile import Profile
+from ulysses.tools.db import UlyssesDB
+from ulysses.tools.email_reader import RawEmail
 
 VALID_EMAIL_HTML = """
 <html><body>
@@ -27,8 +27,8 @@ UNPARSEABLE_EMAIL_HTML = "<html><body><p>Not a job posting at all.</p></body></h
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> HermesDB:
-    database = HermesDB(tmp_path / "scout-test.db")
+async def db(tmp_path: Path) -> UlyssesDB:
+    database = UlyssesDB(tmp_path / "scout-test.db")
     await database.init()
     yield database
     await database.dispose()
@@ -41,7 +41,7 @@ def _reader_returning(*raw_emails: RawEmail) -> AsyncMock:
 
 
 class TestRunOnce:
-    async def test_scores_and_persists_new_job(self, db: HermesDB, profile: Profile) -> None:
+    async def test_scores_and_persists_new_job(self, db: UlyssesDB, profile: Profile) -> None:
         reader = _reader_returning(RawEmail("1", "subj", VALID_EMAIL_HTML, ""))
         scout = ScoutAgent(email_reader=reader, db=db, profile=profile)
 
@@ -55,7 +55,7 @@ class TestRunOnce:
         assert stored is not None
         assert stored.score == score.total_score
 
-    async def test_skips_already_seen_jobs(self, db: HermesDB, profile: Profile) -> None:
+    async def test_skips_already_seen_jobs(self, db: UlyssesDB, profile: Profile) -> None:
         reader = _reader_returning(RawEmail("1", "subj", VALID_EMAIL_HTML, ""))
         scout = ScoutAgent(email_reader=reader, db=db, profile=profile)
 
@@ -65,7 +65,7 @@ class TestRunOnce:
         assert len(first_pass) == 1
         assert len(second_pass) == 0
 
-    async def test_skips_unparseable_emails(self, db: HermesDB, profile: Profile) -> None:
+    async def test_skips_unparseable_emails(self, db: UlyssesDB, profile: Profile) -> None:
         reader = _reader_returning(RawEmail("2", "subj", UNPARSEABLE_EMAIL_HTML, ""))
         scout = ScoutAgent(email_reader=reader, db=db, profile=profile)
 
@@ -74,7 +74,7 @@ class TestRunOnce:
         assert results == []
 
     async def test_returns_empty_list_when_no_new_emails(
-        self, db: HermesDB, profile: Profile
+        self, db: UlyssesDB, profile: Profile
     ) -> None:
         reader = _reader_returning()
         scout = ScoutAgent(email_reader=reader, db=db, profile=profile)
@@ -84,7 +84,7 @@ class TestRunOnce:
 
 class TestRunForever:
     async def test_invokes_callback_for_each_scored_job_then_sleeps(
-        self, db: HermesDB, profile: Profile, mocker
+        self, db: UlyssesDB, profile: Profile, mocker
     ) -> None:
         reader = _reader_returning(RawEmail("1", "subj", VALID_EMAIL_HTML, ""))
         scout = ScoutAgent(email_reader=reader, db=db, profile=profile)
@@ -101,7 +101,7 @@ class TestRunForever:
         on_scored_job.assert_awaited_once()
 
     async def test_recovers_from_run_once_exception(
-        self, db: HermesDB, profile: Profile, mocker
+        self, db: UlyssesDB, profile: Profile, mocker
     ) -> None:
         scout = ScoutAgent(email_reader=AsyncMock(), db=db, profile=profile)
         mocker.patch.object(scout, "run_once", AsyncMock(side_effect=RuntimeError("boom")))

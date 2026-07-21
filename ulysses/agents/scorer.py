@@ -1,6 +1,6 @@
 """Pure, deterministic job scoring engine — no LLM calls, no I/O.
 
-Implements the weighted scoring formula from `HERMES-ARQUITECHTURE.md`:
+Implements the weighted scoring formula from `ULYSSES-ARQUITECHTURE.md`:
 
     score = freshness(posted_at)      # 0-30
           + low_proposal_count(count) # 0-25
@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from hermes.config.profile import Profile
-from hermes.models import BudgetRange, GigCategory, JobPost, JobScore, Recommendation
-from hermes.tools.github_mapper import rank_matching_repos
-from hermes.tools.red_flag import detect_red_flags
+from ulysses.config.profile import Profile
+from ulysses.models import BudgetRange, GigCategory, JobPost, JobScore, Recommendation
+from ulysses.tools.github_mapper import rank_matching_repos
+from ulysses.tools.red_flag import detect_red_flags
 
 __all__ = ["score_job"]
 

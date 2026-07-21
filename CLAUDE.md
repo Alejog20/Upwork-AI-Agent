@@ -1,7 +1,7 @@
-# CLAUDE.md — Hermes Project Standards
+# CLAUDE.md — Ulysses Project Standards
 
 ## Project Identity
-Hermes is a production-grade multi-agent AI ecosystem. This is not a prototype. Every decision must prioritize correctness, privacy, maintainability, and developer experience. Reference `Hermes_Architecture.md` for system design.
+Ulysses is a production-grade multi-agent AI ecosystem. This is not a prototype. Every decision must prioritize correctness, privacy, maintainability, and developer experience. Reference `Ulysses_Architecture.md` for system design.
 
 ## Language & Runtime
 - Python 3.14 (use new syntax: `type` aliases, `tomllib`, improved typing features)
@@ -44,23 +44,23 @@ Hermes is a production-grade multi-agent AI ecosystem. This is not a prototype. 
 - Every agent must have: unit tests for pure logic, integration tests for the LangGraph node
 - Use `pytest.mark.asyncio` for async tests; use `anyio` backend where needed
 - Snapshot testing for proposal and prototype text output: use `syrupy`
-- Run tests: `uv run pytest --cov=hermes --cov-report=term-missing -v`
+- Run tests: `uv run pytest --cov=ulysses --cov-report=term-missing -v`
 
 ## Logging
 - Use `loguru` exclusively — never `print()`, never `logging` stdlib directly
 - Log levels: DEBUG for agent internals, INFO for state transitions, WARNING for red flags, ERROR for failures
 - Structured logging: always include `job_id` and `agent` name in log context using `logger.bind()`
-- Log file: `~/.hermes/logs/hermes.log` with rotation (10 MB, 7 days retention)
+- Log file: `~/.ulysses/logs/ulysses.log` with rotation (10 MB, 7 days retention)
 
 ## Database
 - SQLModel + aiosqlite for async SQLite
-- DB file: `~/.hermes/hermes.db`
+- DB file: `~/.ulysses/ulysses.db`
 - All DB operations go through `tools/db.py` — no raw SQL outside that module
 - Use Alembic for migrations (even for SQLite — keeps schema changes traceable)
 
 ## Security & Privacy
 - No credentials in code or config files — `.env` only, loaded via `pydantic-settings`
-- `.env` and `~/.hermes/` are in `.gitignore`
+- `.env` and `~/.ulysses/` are in `.gitignore`
 - App-specific passwords for email (never main account password)
 - No job data, proposals, or personal data sent to any external service except the configured LLM API
 - All Telegram messages go to your personal chat ID only — validate in `notifier.py`
@@ -72,12 +72,12 @@ Hermes is a production-grade multi-agent AI ecosystem. This is not a prototype. 
 - IMAP connection failures must retry with exponential backoff before alerting
 
 ## File & Directory Conventions
-- Source code: `hermes/` package
-- Tests: `tests/` (mirrors `hermes/` structure)
-- Templates: `hermes/templates/` (proposals and prototypes)
-- Config: `hermes/config/` (settings.py, profile.yaml)
-- Output artifacts: `~/.hermes/output/<job_id>/`
-- Logs: `~/.hermes/logs/`
+- Source code: `ulysses/` package
+- Tests: `tests/` (mirrors `ulysses/` structure)
+- Templates: `ulysses/templates/` (proposals and prototypes)
+- Config: `ulysses/config/` (settings.py, profile.yaml)
+- Output artifacts: `~/.ulysses/output/<job_id>/`
+- Logs: `~/.ulysses/logs/`
 
 ## CLI Standards
 - Framework: `Typer` with `rich` integration for output
@@ -90,12 +90,12 @@ Hermes is a production-grade multi-agent AI ecosystem. This is not a prototype. 
 - Menu bar app: `rumps` library
 - Never block the main thread — all agent work runs in a background `asyncio` event loop via `threading.Thread`
 - macOS notifications via `rumps.notification()` — title ≤ 50 chars, message ≤ 100 chars
-- LaunchAgent plist stored at `~/Library/LaunchAgents/com.hermes.agent.plist`
+- LaunchAgent plist stored at `~/Library/LaunchAgents/com.ulysses.agent.plist`
 
 ## Git Conventions
 - Commit format: `type(scope): description` — types: feat, fix, refactor, test, docs, chore
 - One logical change per commit
-- Never commit: `.env`, `*.db`, `__pycache__`, `.ruff_cache`, `~/.hermes/`
+- Never commit: `.env`, `*.db`, `__pycache__`, `.ruff_cache`, `~/.ulysses/`
 - Branch naming: `phase-N/feature-name`
 
 ## Definition of Done (per phase)
@@ -103,6 +103,6 @@ A phase is complete when:
 1. All tasks listed in the Claude Code prompt are implemented
 2. `ruff check .` returns zero errors
 3. `ruff format --check .` returns zero diffs
-4. `pytest --cov=hermes --cov-report=term-missing` passes with ≥ 80% coverage
+4. `pytest --cov=ulysses --cov-report=term-missing` passes with ≥ 80% coverage
 5. The feature works end-to-end in a manual test
 6. All new public APIs have docstrings and type hints

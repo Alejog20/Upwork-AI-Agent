@@ -1,4 +1,4 @@
-"""Typer CLI entry point for Hermes."""
+"""Typer CLI entry point for Ulysses."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ from rich.console import Console
 from rich.table import Table
 from telegram.ext import Application
 
-from hermes.agents.notifier import NotifierAgent
-from hermes.agents.scout import ScoutAgent
-from hermes.config.profile import Profile, load_profile
-from hermes.config.settings import Settings, get_settings
-from hermes.graph.graph import build_graph
-from hermes.models import JobPost, JobScore
-from hermes.tools.db import HermesDB
-from hermes.tools.email_reader import EmailReader
+from ulysses.agents.notifier import NotifierAgent
+from ulysses.agents.scout import ScoutAgent
+from ulysses.config.profile import Profile, load_profile
+from ulysses.config.settings import Settings, get_settings
+from ulysses.graph.graph import build_graph
+from ulysses.models import JobPost, JobScore
+from ulysses.tools.db import UlyssesDB
+from ulysses.tools.email_reader import EmailReader
 
 __all__ = ["app"]
 
-app = typer.Typer(help="Hermes — monitors, scores, and helps you respond to Upwork jobs.")
+app = typer.Typer(help="Ulysses — monitors, scores, and helps you respond to Upwork jobs.")
 console = Console()
 
 
@@ -40,8 +40,8 @@ def _configure_logging(settings: Settings) -> None:
 
 def _build_dependencies(
     settings: Settings, profile: Profile
-) -> tuple[HermesDB, ScoutAgent, NotifierAgent]:
-    db = HermesDB(settings.db_path)
+) -> tuple[UlyssesDB, ScoutAgent, NotifierAgent]:
+    db = UlyssesDB(settings.db_path)
     email_reader = EmailReader(
         host=settings.imap_host,
         port=settings.imap_port,
@@ -58,12 +58,12 @@ def _build_dependencies(
 
 @app.command()
 def start() -> None:
-    """Start the Hermes monitoring loop: scout, score, and notify via Telegram."""
+    """Start the Ulysses monitoring loop: scout, score, and notify via Telegram."""
     settings = get_settings()
     profile = load_profile(settings.profile_path)
     _configure_logging(settings)
 
-    console.print("[bold green]Hermes is starting...[/bold green]")
+    console.print("[bold green]Ulysses is starting...[/bold green]")
     console.print(
         f"  Watching [cyan]{settings.imap_user}[/cyan] on [cyan]{settings.imap_host}[/cyan]"
     )
@@ -73,7 +73,7 @@ def start() -> None:
     try:
         asyncio.run(_run_forever(settings, profile))
     except KeyboardInterrupt:
-        console.print("\n[yellow]Hermes stopped.[/yellow]")
+        console.print("\n[yellow]Ulysses stopped.[/yellow]")
 
 
 async def _run_forever(settings: Settings, profile: Profile) -> None:
@@ -124,14 +124,14 @@ def status() -> None:
 
 
 async def _print_status(settings: Settings) -> None:
-    db = HermesDB(settings.db_path)
+    db = UlyssesDB(settings.db_path)
     await db.init()
     try:
         counts = await db.stats()
     finally:
         await db.dispose()
 
-    table = Table(title="Hermes Status")
+    table = Table(title="Ulysses Status")
     table.add_column("Status", style="cyan")
     table.add_column("Count", justify="right", style="magenta")
     for status_name, count in counts.items():

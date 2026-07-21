@@ -82,7 +82,7 @@ def load_profile(path: Path = DEFAULT_PROFILE_PATH) -> Profile:
 
     Args:
         path: Path to the profile YAML file. Defaults to the bundled
-            `hermes/config/profile.yaml`.
+            `ulysses/config/profile.yaml`.
 
     Returns:
         The parsed and validated `Profile`.

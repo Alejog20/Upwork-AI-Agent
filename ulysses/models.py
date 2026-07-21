@@ -1,8 +1,8 @@
-"""Domain models shared by every layer of Hermes.
+"""Domain models shared by every layer of Ulysses.
 
 These Pydantic models represent the business objects that flow through the
 LangGraph pipeline (`JobPost`, `JobScore`). They are intentionally decoupled
-from the SQLModel persistence tables in `hermes.tools.db`, which store a
+from the SQLModel persistence tables in `ulysses.tools.db`, which store a
 flattened subset of this data for querying.
 """
 

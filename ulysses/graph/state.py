@@ -1,17 +1,17 @@
-"""Typed state shared across every node in the Hermes LangGraph pipeline."""
+"""Typed state shared across every node in the Ulysses LangGraph pipeline."""
 
 from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-from hermes.models import JobPost, JobScore
+from ulysses.models import JobPost, JobScore
 
-__all__ = ["HermesState", "UserAction"]
+__all__ = ["UlyssesState", "UserAction"]
 
 type UserAction = Literal["draft", "build", "both", "skip", "archive"]
 
 
-class HermesState(TypedDict):
+class UlyssesState(TypedDict):
     """State threaded through the scout -> scorer -> notifier -> {proposal,prototype} graph."""
 
     job: JobPost

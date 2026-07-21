@@ -1,4 +1,4 @@
-"""Tests for `hermes.agents.notifier`: message formatting and agent behavior."""
+"""Tests for `ulysses.agents.notifier`: message formatting and agent behavior."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pytest_mock import MockerFixture
 
-from hermes.agents.notifier import NotifierAgent, format_job_message
-from hermes.agents.scorer import score_job
-from hermes.config.profile import Profile
-from hermes.models import JobPost, JobScore
-from hermes.tools.db import JobStatus
+from ulysses.agents.notifier import NotifierAgent, format_job_message
+from ulysses.agents.scorer import score_job
+from ulysses.config.profile import Profile
+from ulysses.models import JobPost, JobScore
+from ulysses.tools.db import JobStatus
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ class TestFormatJobMessage:
 class TestNotifierAgentThresholdRouting:
     @pytest.fixture
     def notifier(self, mocker: MockerFixture) -> NotifierAgent:
-        mocker.patch("hermes.agents.notifier.Bot")
+        mocker.patch("ulysses.agents.notifier.Bot")
         db = MagicMock()
         db.update_status = AsyncMock()
         return NotifierAgent(bot_token="fake-token", chat_id="123456", db=db)
@@ -105,7 +105,7 @@ class TestNotifierAgentThresholdRouting:
 class TestNotifierAgentCallbackHandling:
     @pytest.fixture
     def notifier(self, mocker: MockerFixture) -> NotifierAgent:
-        mocker.patch("hermes.agents.notifier.Bot")
+        mocker.patch("ulysses.agents.notifier.Bot")
         db = MagicMock()
         db.update_status = AsyncMock()
         return NotifierAgent(bot_token="fake-token", chat_id="123456", db=db)

@@ -1,4 +1,4 @@
-"""Structural tests for `hermes.graph.graph.build_graph`."""
+"""Structural tests for `ulysses.graph.graph.build_graph`."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pytest_mock import MockerFixture
 
-from hermes.agents.notifier import NotifierAgent
-from hermes.config.profile import Profile
-from hermes.graph.graph import build_graph
+from ulysses.agents.notifier import NotifierAgent
+from ulysses.config.profile import Profile
+from ulysses.graph.graph import build_graph
 
 
 @pytest.fixture
 def notifier(mocker: MockerFixture) -> NotifierAgent:
-    mocker.patch("hermes.agents.notifier.Bot")
+    mocker.patch("ulysses.agents.notifier.Bot")
     return NotifierAgent(bot_token="fake-token", chat_id="123456", db=MagicMock())
 
 

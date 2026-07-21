@@ -1,11 +1,11 @@
-"""Tests for `hermes.tools.job_parser` against representative Upwork email HTML."""
+"""Tests for `ulysses.tools.job_parser` against representative Upwork email HTML."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from hermes.models import BudgetType
-from hermes.tools.job_parser import JobParseError, parse_job_email
+from ulysses.models import BudgetType
+from ulysses.tools.job_parser import JobParseError, parse_job_email
 
 FULL_EMAIL_HTML = """
 <html><body>

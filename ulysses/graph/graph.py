@@ -1,4 +1,4 @@
-"""Assembles the Hermes LangGraph `StateGraph`.
+"""Assembles the Ulysses LangGraph `StateGraph`.
 
 Human-in-the-loop: the graph interrupts after `notifier` so the CLI/bot layer
 can wait for a Telegram button press (which sets `state["user_action"]`)
@@ -12,10 +12,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from hermes.agents.notifier import NotifierAgent
-from hermes.config.profile import Profile
-from hermes.graph.edges import route_user_action
-from hermes.graph.nodes import (
+from ulysses.agents.notifier import NotifierAgent
+from ulysses.config.profile import Profile
+from ulysses.graph.edges import route_user_action
+from ulysses.graph.nodes import (
     build_done_node,
     build_notifier_node,
     build_proposal_node,
@@ -23,7 +23,7 @@ from hermes.graph.nodes import (
     build_scorer_node,
     build_scout_node,
 )
-from hermes.graph.state import HermesState
+from ulysses.graph.state import UlyssesState
 
 __all__ = ["build_graph"]
 
@@ -33,7 +33,7 @@ def build_graph(
     notifier: NotifierAgent,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
-    """Build and compile the Hermes pipeline graph.
+    """Build and compile the Ulysses pipeline graph.
 
     Args:
         profile: The freelancer's profile, injected into the scorer/notifier nodes.
@@ -47,7 +47,7 @@ def build_graph(
         A compiled LangGraph graph that interrupts after `notifier`, awaiting
         `state["user_action"]` before it can be resumed.
     """
-    graph = StateGraph(HermesState)
+    graph = StateGraph(UlyssesState)
 
     graph.add_node("scout", build_scout_node())
     graph.add_node("scorer", build_scorer_node(profile))

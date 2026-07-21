@@ -1,4 +1,4 @@
-"""Tests for `hermes.tools.email_reader`, with `imaplib2` fully mocked out."""
+"""Tests for `ulysses.tools.email_reader`, with `imaplib2` fully mocked out."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes.tools.email_reader import EmailReader
+from ulysses.tools.email_reader import EmailReader
 
 MULTIPART_HTML_EMAIL = (
     b"Subject: Python scraper job\r\n"
@@ -36,7 +36,7 @@ class TestFetchNewUpworkEmails:
         mock_conn.search.return_value = ("OK", [b"1"])
         mock_conn.fetch.return_value = ("OK", [(b"1 (RFC822 {123}", MULTIPART_HTML_EMAIL)])
 
-        with patch("hermes.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
+        with patch("ulysses.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
             emails = await reader.fetch_new_upwork_emails()
 
         assert len(emails) == 1
@@ -50,7 +50,7 @@ class TestFetchNewUpworkEmails:
         mock_conn = MagicMock()
         mock_conn.search.return_value = ("NO", [None])
 
-        with patch("hermes.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
+        with patch("ulysses.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
             emails = await reader.fetch_new_upwork_emails()
 
         assert emails == []
@@ -61,7 +61,7 @@ class TestFetchNewUpworkEmails:
         mock_conn.search.return_value = ("OK", [b"1"])
         mock_conn.fetch.return_value = ("OK", [(b"1 (RFC822 {50}", PLAIN_TEXT_ONLY_EMAIL)])
 
-        with patch("hermes.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
+        with patch("ulysses.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
             emails = await reader.fetch_new_upwork_emails()
 
         assert emails == []
@@ -71,7 +71,7 @@ class TestFetchNewUpworkEmails:
         mock_conn.search.return_value = ("OK", [b"1"])
         mock_conn.fetch.return_value = ("NO", None)
 
-        with patch("hermes.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
+        with patch("ulysses.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
             emails = await reader.fetch_new_upwork_emails()
 
         assert emails == []
@@ -80,7 +80,7 @@ class TestFetchNewUpworkEmails:
         mock_conn = MagicMock()
         mock_conn.search.return_value = ("OK", [b""])
 
-        with patch("hermes.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
+        with patch("ulysses.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
             emails = await reader.fetch_new_upwork_emails()
 
         assert emails == []

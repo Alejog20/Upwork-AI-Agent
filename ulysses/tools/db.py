@@ -1,7 +1,7 @@
 """Async SQLite persistence layer. All database queries live in this module.
 
 Uses SQLModel over aiosqlite. Tables store a flattened, queryable subset of the
-richer Pydantic domain models in `hermes.models` — the full `JobPost`/`JobScore`
+richer Pydantic domain models in `ulysses.models` — the full `JobPost`/`JobScore`
 payloads are reconstructed by callers that need them from the original source
 (the graph state), not from the DB.
 """
@@ -19,16 +19,16 @@ from sqlmodel import Field, SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 __all__ = [
-    "HermesDB",
     "Job",
     "JobStatus",
     "ProposalDraft",
     "PrototypeFile",
+    "UlyssesDB",
 ]
 
 
 class JobStatus(StrEnum):
-    """Lifecycle status of a job as it moves through the Hermes pipeline."""
+    """Lifecycle status of a job as it moves through the Ulysses pipeline."""
 
     NEW = "new"
     NOTIFIED = "notified"
@@ -73,8 +73,8 @@ class PrototypeFile(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
-class HermesDB:
-    """Async SQLite database handle. Every query Hermes runs goes through here."""
+class UlyssesDB:
+    """Async SQLite database handle. Every query Ulysses runs goes through here."""
 
     def __init__(self, db_path: Path) -> None:
         """Create a DB handle backed by the SQLite file at `db_path`.
@@ -199,7 +199,7 @@ class HermesDB:
             return list(result.all())
 
     async def stats(self) -> dict[str, int]:
-        """Return summary counts used by `hermes status`."""
+        """Return summary counts used by `ulysses status`."""
         async with self.session() as session:
             all_jobs = list((await session.exec(select(Job))).all())
         counts = {status.value: 0 for status in JobStatus}
