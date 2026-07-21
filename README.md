@@ -1,6 +1,6 @@
-# Hermes
+# Claudio
 
-Hermes is a multi-agent AI ecosystem that monitors your email for new Upwork
+Claudio is a multi agent AI ecosystem that monitors your email for new Upwork
 job postings, scores them against your profile, and pushes the good ones to
 Telegram with one-tap actions to draft a proposal or build a demo prototype.
 
