@@ -1,0 +1,55 @@
+# Your Upwork profile configuration — Hermes uses this for scoring and proposals.
+freelancer:
+  name: "Alejandro García"
+  title: "I automate the boring stuff — Python scripts, scrapers, and AI pipelines"
+  github: "https://github.com/Alejog20"
+  rate_usd_hr: 25
+
+skills:
+  primary:
+    - python
+    - fastapi
+    - web scraping
+    - automation
+    - data pipelines
+    - pandas
+    - beautifulsoup
+    - playwright
+  secondary:
+    - langchain
+    - openai api
+    - sqlite
+    - postgresql
+    - react
+    - typescript
+    - rag
+
+repos:
+  - name: Multiple_source_scraper
+    url: https://github.com/Alejog20/Multiple_source_scraper
+    tags: [scraping, python, data extraction, multi-platform]
+  - name: download-autoprocessor
+    url: https://github.com/Alejog20/download-autoprocessor
+    tags: [automation, file processing, watchdog, python]
+  - name: Invoice_generator_from_xlsx
+    url: https://github.com/Alejog20/Invoice_generator_from_xlsx
+    tags: [automation, excel, pdf, pandas, reporting]
+  - name: Extract_Reddit_comments_bot
+    url: https://github.com/Alejog20/Extract_Reddit_comments_bot
+    tags: [api, reddit, data extraction, python bot]
+  - name: Second Brain Obsidian
+    url: https://github.com/Alejog20/second_brain_obsidian
+    tags: [api, reddit, data extraction, python bot, rag, llm]
+
+
+scoring:
+  target_budget_min: 50
+  target_budget_max: 800
+  min_score_to_notify: 50
+  instant_alert_threshold: 75
+  skip_if_proposals_above: 25
+  skip_if_posted_hours_ago: 6
+
+alerts:
+  telegram_chat_id: "YOUR_CHAT_ID"
+  batch_interval_minutes: 30

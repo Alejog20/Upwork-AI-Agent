@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+# Hermes runtime data (DB, logs, output artifacts) and ruff cache
+.hermes/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
