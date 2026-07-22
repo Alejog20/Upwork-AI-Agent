@@ -89,7 +89,10 @@ class EmailReader:
         return emails
 
     def _fetch_one(self, conn: imaplib2.IMAP4_SSL, uid: bytes) -> RawEmail | None:
-        status, msg_data = conn.fetch(uid, "(RFC822)")
+        # BODY.PEEK[] fetches the full message without setting the \Seen flag,
+        # so checking for new jobs never silently marks the user's real inbox
+        # as read out from under them.
+        status, msg_data = conn.fetch(uid, "(BODY.PEEK[])")
         if status != "OK" or not msg_data or msg_data[0] is None:
             logger.warning("Failed to fetch IMAP message uid={}", uid)
             return None

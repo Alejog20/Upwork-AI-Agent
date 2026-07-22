@@ -11,6 +11,7 @@ from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from telegram.error import InvalidToken, NetworkError, RetryAfter
 from telegram.ext import Application
 
 from ulysses.agents.notifier import NotifierAgent
@@ -27,6 +28,9 @@ __all__ = ["app"]
 
 app = typer.Typer(help="Ulysses — monitors, scores, and helps you respond to Upwork jobs.")
 console = Console()
+
+_TELEGRAM_HTTP_TIMEOUT_SECONDS = 20
+_TELEGRAM_STARTUP_MAX_BACKOFF_SECONDS = 60
 
 
 def _configure_logging(settings: Settings) -> None:
@@ -96,6 +100,16 @@ def start() -> None:
         asyncio.run(_run_forever(settings, profile))
     except KeyboardInterrupt:
         console.print("\n[yellow]Ulysses stopped.[/yellow]")
+    except InvalidToken:
+        console.print(
+            "\n[red]Telegram rejected the bot token — check ULYSSES_TELEGRAM_BOT_TOKEN "
+            "in .env.[/red]"
+        )
+        raise typer.Exit(code=1) from None
+    except Exception:
+        logger.exception("Ulysses crashed")
+        console.print(f"\n[red]Ulysses crashed — see {get_settings().log_path} for details.[/red]")
+        raise typer.Exit(code=1) from None
 
 
 async def _run_forever(settings: Settings, profile: Profile) -> None:
@@ -123,25 +137,71 @@ async def _run_forever(settings: Settings, profile: Profile) -> None:
             )
         except Exception:
             logger.exception("Pipeline failed for job_id={}", job.id)
-            await notifier.send_error_message(f"Failed to process job: {job.title}")
+            try:
+                await notifier.send_error_message(f"Failed to process job: {job.title}")
+            except Exception:
+                logger.exception("Also failed to notify about the pipeline failure")
 
-    telegram_app = Application.builder().token(settings.telegram_bot_token).build()
+    telegram_app = _build_telegram_application(settings)
     telegram_app.add_handler(notifier.callback_handler)
 
-    await telegram_app.initialize()
-    await telegram_app.start()
-    await telegram_app.updater.start_polling()
-
     try:
+        await _start_telegram_with_retry(telegram_app)
         await asyncio.gather(
             scout.run_forever(settings.email_poll_interval_seconds, on_scored_job),
             notifier.run_batch_loop(profile.alerts.batch_interval_minutes),
         )
     finally:
-        await telegram_app.updater.stop()
-        await telegram_app.stop()
-        await telegram_app.shutdown()
+        await _shutdown_telegram(telegram_app)
         await db.dispose()
+
+
+def _build_telegram_application(settings: Settings) -> Application:
+    return (
+        Application.builder()
+        .token(settings.telegram_bot_token)
+        .connect_timeout(_TELEGRAM_HTTP_TIMEOUT_SECONDS)
+        .read_timeout(_TELEGRAM_HTTP_TIMEOUT_SECONDS)
+        .get_updates_read_timeout(_TELEGRAM_HTTP_TIMEOUT_SECONDS)
+        .build()
+    )
+
+
+async def _start_telegram_with_retry(telegram_app: Application) -> None:
+    """Start polling, retrying transient network errors with capped backoff.
+
+    Permanent errors (e.g. `InvalidToken`) are not caught here — they
+    propagate immediately so the operator can fix the configuration instead
+    of retrying forever against a bot token that will never work.
+    """
+    attempt = 0
+    while True:
+        try:
+            await telegram_app.initialize()
+            await telegram_app.start()
+            await telegram_app.updater.start_polling()
+            return
+        except (NetworkError, RetryAfter) as exc:
+            attempt += 1
+            wait_seconds = min(_TELEGRAM_STARTUP_MAX_BACKOFF_SECONDS, 2**attempt)
+            logger.warning(
+                "Telegram startup failed (attempt {}): {} -- retrying in {}s",
+                attempt,
+                exc,
+                wait_seconds,
+            )
+            await asyncio.sleep(wait_seconds)
+
+
+async def _shutdown_telegram(telegram_app: Application) -> None:
+    try:
+        if telegram_app.updater is not None and telegram_app.updater.running:
+            await telegram_app.updater.stop()
+        if telegram_app.running:
+            await telegram_app.stop()
+        await telegram_app.shutdown()
+    except Exception:
+        logger.exception("Error while shutting down Telegram (ignoring, exiting anyway)")
 
 
 @app.command()

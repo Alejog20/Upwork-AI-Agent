@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pytest_mock import MockerFixture
+from telegram.error import NetworkError, TimedOut
 
 from ulysses.agents.notifier import NotifierAgent, format_job_message
 from ulysses.agents.scorer import score_job
@@ -221,3 +222,40 @@ class TestSendErrorMessage:
         notifier._bot.send_message.assert_awaited_once_with(
             chat_id="123456", text="⚠️ something broke"
         )
+
+
+class TestSendMessageRetry:
+    @pytest.fixture
+    def notifier(self, mocker: MockerFixture) -> NotifierAgent:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        return NotifierAgent(bot_token="fake-token", chat_id="123456", db=MagicMock())
+
+    async def test_retries_on_network_error_then_succeeds(
+        self, notifier: NotifierAgent, mocker: MockerFixture
+    ) -> None:
+        mocker.patch("asyncio.sleep", AsyncMock())
+        notifier._bot.send_message = AsyncMock(side_effect=[TimedOut(), None])
+        await notifier.send_error_message("retry me")
+        assert notifier._bot.send_message.await_count == 2
+
+    async def test_reraises_after_exhausting_retries(
+        self, notifier: NotifierAgent, mocker: MockerFixture
+    ) -> None:
+        mocker.patch("asyncio.sleep", AsyncMock())
+        notifier._bot.send_message = AsyncMock(side_effect=NetworkError("down"))
+        with pytest.raises(NetworkError):
+            await notifier.send_error_message("will fail")
+        assert notifier._bot.send_message.await_count == 3
+
+    async def test_draft_handler_failure_and_error_notification_both_failing_does_not_raise(
+        self, notifier: NotifierAgent, mocker: MockerFixture
+    ) -> None:
+        mocker.patch("asyncio.sleep", AsyncMock())
+        notifier.set_draft_handler(AsyncMock(side_effect=RuntimeError("boom")))
+        notifier._bot.send_message = AsyncMock(side_effect=NetworkError("also down"))
+        update = MagicMock()
+        update.callback_query.data = "draft:job-1"
+        update.callback_query.message.chat_id = "123456"
+        update.callback_query.answer = AsyncMock()
+
+        await notifier.handle_callback(update, MagicMock())  # must not raise

@@ -13,17 +13,27 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from loguru import logger
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import NetworkError, RetryAfter
 from telegram.ext import CallbackQueryHandler, ContextTypes
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ulysses.config.profile import ScoringConfig
 from ulysses.models import JobPost, JobScore, Recommendation
 from ulysses.tools.db import JobStatus, UlyssesDB
 
 __all__ = ["NotifierAgent", "format_job_message"]
+
+_telegram_send_retry = retry(
+    retry=retry_if_exception_type((NetworkError, RetryAfter)),
+    wait=wait_exponential(multiplier=1, min=2, max=20),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 
 _ACTION_LABELS: dict[str, str] = {
     "draft": "📝 Draft Proposal",
@@ -71,6 +81,11 @@ class NotifierAgent:
         """Register the callback invoked when the Draft or Regenerate button is pressed."""
         self._on_draft_requested = handler
 
+    @_telegram_send_retry
+    async def _send_message(self, **kwargs: Any) -> None:
+        """Send a Telegram message, retrying on transient network errors."""
+        await self._bot.send_message(**kwargs)
+
     @property
     def callback_handler(self) -> CallbackQueryHandler:
         """A `python-telegram-bot` handler for the inline action buttons."""
@@ -108,7 +123,7 @@ class NotifierAgent:
     async def _send_job_alert(self, job: JobPost, score: JobScore) -> None:
         text = format_job_message(job, score)
         keyboard = _build_action_keyboard(job.id)
-        await self._bot.send_message(
+        await self._send_message(
             chat_id=self._chat_id,
             text=text,
             reply_markup=keyboard,
@@ -156,7 +171,12 @@ class NotifierAgent:
             await self._on_draft_requested(job_id)
         except Exception as exc:
             logger.bind(job_id=job_id, agent="notifier").exception("Draft generation failed")
-            await self.send_error_message(f"Failed to draft a proposal for this job: {exc}")
+            try:
+                await self.send_error_message(f"Failed to draft a proposal for this job: {exc}")
+            except Exception:
+                logger.bind(job_id=job_id, agent="notifier").exception(
+                    "Also failed to notify about the draft failure"
+                )
 
     async def _send_plain_copy(self, job_id: str) -> None:
         drafts = await self._db.get_proposal_drafts(job_id)
@@ -165,7 +185,7 @@ class NotifierAgent:
                 "Copy requested but no draft exists"
             )
             return
-        await self._bot.send_message(chat_id=self._chat_id, text=drafts[-1].content)
+        await self._send_message(chat_id=self._chat_id, text=drafts[-1].content)
 
     async def send_proposal_draft(self, job_id: str, text: str) -> None:
         """Send a generated proposal draft to Telegram with copy/regenerate buttons."""
@@ -181,7 +201,7 @@ class NotifierAgent:
                 ]
             ]
         )
-        await self._bot.send_message(
+        await self._send_message(
             chat_id=self._chat_id,
             text=f"--- PROPOSAL DRAFT ---\n\n{text}\n\n--- END DRAFT ---",
             reply_markup=keyboard,
@@ -191,7 +211,7 @@ class NotifierAgent:
 
     async def send_error_message(self, text: str) -> None:
         """Surface an agent failure to the user as a plain Telegram message."""
-        await self._bot.send_message(chat_id=self._chat_id, text=f"⚠️ {text}")
+        await self._send_message(chat_id=self._chat_id, text=f"⚠️ {text}")
 
 
 def format_job_message(job: JobPost, score: JobScore) -> str:
