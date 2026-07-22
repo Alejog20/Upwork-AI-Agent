@@ -16,3 +16,7 @@ wheels/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local-only docs — never pushed, for privacy. AGENTS-sample.md is the public template.
+CLAUDE.md
+AGENTS.md
