@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from ulysses.agents.scorer import score_job
+from ulysses.config.profile import Profile
+from ulysses.models import JobPost
 from ulysses.tools.db import Job, JobStatus, UlyssesDB
 
 
@@ -115,6 +119,61 @@ class TestProposalDraftsAndPrototypeFiles:
         files = await db.get_prototype_files("job-1")
         assert len(files) == 1
         assert files[0].filename == "demo.py"
+
+
+class TestAdditiveMigration:
+    async def test_init_adds_missing_columns_to_a_pre_existing_table(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "old-schema.db"
+
+        # Simulate a Job table from before job_json/score_json existed.
+        connection = sqlite3.connect(db_path)
+        connection.execute(
+            "CREATE TABLE job ("
+            "id VARCHAR PRIMARY KEY, title VARCHAR, description VARCHAR, "
+            "url VARCHAR, score FLOAT, category VARCHAR, status VARCHAR(8), "
+            "posted_at DATETIME, seen_at DATETIME)"
+        )
+        connection.commit()
+        connection.close()
+
+        migrated_db = UlyssesDB(db_path)
+        await migrated_db.init()
+        try:
+            job = await migrated_db.upsert_job(_job(job_json='{"x": 1}', score_json='{"y": 2}'))
+            assert job.job_json == '{"x": 1}'
+            assert job.score_json == '{"y": 2}'
+        finally:
+            await migrated_db.dispose()
+
+
+class TestGetFullJob:
+    async def test_reconstructs_job_and_score_from_json_columns(
+        self, db: UlyssesDB, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        await db.upsert_job(
+            _job(
+                fresh_job.id,
+                title=fresh_job.title,
+                job_json=fresh_job.model_dump_json(),
+                score_json=score.model_dump_json(),
+            )
+        )
+
+        full = await db.get_full_job(fresh_job.id)
+
+        assert full is not None
+        restored_job, restored_score = full
+        assert restored_job.title == fresh_job.title
+        assert restored_job.url == fresh_job.url
+        assert restored_score.total_score == score.total_score
+
+    async def test_returns_none_when_job_missing(self, db: UlyssesDB) -> None:
+        assert await db.get_full_job("does-not-exist") is None
+
+    async def test_returns_none_when_json_columns_unset(self, db: UlyssesDB) -> None:
+        await db.upsert_job(_job())
+        assert await db.get_full_job("job-1") is None
 
 
 class TestStats:

@@ -1,9 +1,11 @@
 """Async SQLite persistence layer. All database queries live in this module.
 
-Uses SQLModel over aiosqlite. Tables store a flattened, queryable subset of the
-richer Pydantic domain models in `ulysses.models` — the full `JobPost`/`JobScore`
-payloads are reconstructed by callers that need them from the original source
-(the graph state), not from the DB.
+Uses SQLModel over aiosqlite. The `Job` table's primary columns are a flattened,
+queryable subset of the richer Pydantic domain models in `ulysses.models`
+(for listing/filtering); it also stores the full `JobPost`/`JobScore` payloads
+as JSON so callers without access to the original graph state — e.g. the
+`ulysses draft <url>` CLI command, or a Telegram button pressed long after the
+job was scored — can reconstruct them via `get_full_job`.
 """
 
 from __future__ import annotations
@@ -14,9 +16,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import Field, SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+
+from ulysses.models import JobPost, JobScore
 
 __all__ = [
     "Job",
@@ -52,6 +58,8 @@ class Job(SQLModel, table=True):
     status: JobStatus = Field(default=JobStatus.NEW)
     posted_at: datetime
     seen_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    job_json: str | None = None
+    score_json: str | None = None
 
 
 class ProposalDraft(SQLModel, table=True):
@@ -86,10 +94,19 @@ class UlyssesDB:
         self._engine: AsyncEngine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
 
     async def init(self) -> None:
-        """Create the parent directory (if needed) and all tables."""
+        """Create the parent directory (if needed), all tables, and any missing columns.
+
+        `SQLModel.metadata.create_all` only creates tables that don't exist yet
+        — it won't add new columns to a table from an older version of the
+        schema. Since this project doesn't run a full migration tool (Alembic),
+        `_add_missing_columns` covers the one thing that actually happens in
+        practice: additive, nullable columns (like `job_json`/`score_json`)
+        showing up on an existing SQLite file from a prior run.
+        """
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with self._engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
+            await conn.run_sync(_add_missing_columns)
 
     async def dispose(self) -> None:
         """Dispose of the underlying connection pool."""
@@ -110,7 +127,16 @@ class UlyssesDB:
         async with self.session() as session:
             existing = await session.get(Job, job.id)
             if existing is not None:
-                for field_name in ("title", "description", "url", "score", "category", "posted_at"):
+                for field_name in (
+                    "title",
+                    "description",
+                    "url",
+                    "score",
+                    "category",
+                    "posted_at",
+                    "job_json",
+                    "score_json",
+                ):
                     setattr(existing, field_name, getattr(job, field_name))
                 session.add(existing)
                 await session.commit()
@@ -131,6 +157,19 @@ class UlyssesDB:
         async with self.session() as session:
             result = await session.exec(select(Job).where(Job.url == url))
             return result.first()
+
+    async def get_full_job(self, job_id: str) -> tuple[JobPost, JobScore] | None:
+        """Reconstruct the full `JobPost`/`JobScore` for a job, if it was stored.
+
+        Returns `None` if the job doesn't exist, or if it predates the
+        `job_json`/`score_json` columns being populated.
+        """
+        job = await self.get_job(job_id)
+        if job is None or job.job_json is None or job.score_json is None:
+            return None
+        return JobPost.model_validate_json(job.job_json), JobScore.model_validate_json(
+            job.score_json
+        )
 
     async def list_jobs(
         self,
@@ -207,3 +246,20 @@ class UlyssesDB:
             counts[job.status.value] += 1
         counts["total"] = len(all_jobs)
         return counts
+
+
+def _add_missing_columns(sync_conn: Connection) -> None:
+    """Add any column present in the models but missing from the live SQLite tables."""
+    inspector = inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    for table in SQLModel.metadata.tables.values():
+        if table.name not in existing_tables:
+            continue
+        existing_columns = {col["name"] for col in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing_columns:
+                continue
+            column_type = column.type.compile(sync_conn.dialect)
+            sync_conn.execute(
+                text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column_type}')
+            )

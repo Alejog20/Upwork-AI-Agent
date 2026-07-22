@@ -1,0 +1,10 @@
+{hook}
+
+Proof: {proof_repo} ({proof_repo_url}) — clean API integration, retries and error handling included.
+
+Plan:
+• {plan_bullet_1}
+• {plan_bullet_2}
+• {plan_bullet_3}
+
+Timeline: {timeline} | Bid: ${bid}

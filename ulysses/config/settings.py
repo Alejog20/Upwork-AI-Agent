@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     telegram_chat_id: str
 
-    # LLM (see `ulysses.tools.llm.get_llm` — added in Phase 2)
+    # LLM (see `ulysses.tools.llm.get_llm`)
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
     llm_base_url: str | None = None
