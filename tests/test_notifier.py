@@ -127,13 +127,97 @@ class TestNotifierAgentCallbackHandling:
         await notifier.handle_callback(update, MagicMock())
         notifier._db.update_status.assert_awaited_once_with("job-2", JobStatus.ARCHIVED)
 
-    async def test_draft_action_does_not_touch_db_status(self, notifier: NotifierAgent) -> None:
+    async def test_draft_action_does_not_touch_db_status_directly(
+        self, notifier: NotifierAgent
+    ) -> None:
+        notifier.set_draft_handler(AsyncMock())
         update = self._make_update("123456", "draft:job-3")
         await notifier.handle_callback(update, MagicMock())
         notifier._db.update_status.assert_not_awaited()
+
+    async def test_draft_action_invokes_draft_handler(self, notifier: NotifierAgent) -> None:
+        handler = AsyncMock()
+        notifier.set_draft_handler(handler)
+        update = self._make_update("123456", "draft:job-3")
+        await notifier.handle_callback(update, MagicMock())
+        handler.assert_awaited_once_with("job-3")
+
+    async def test_regenerate_action_invokes_draft_handler(self, notifier: NotifierAgent) -> None:
+        handler = AsyncMock()
+        notifier.set_draft_handler(handler)
+        update = self._make_update("123456", "regenerate:job-3")
+        await notifier.handle_callback(update, MagicMock())
+        handler.assert_awaited_once_with("job-3")
+
+    async def test_draft_with_no_handler_wired_does_not_raise(
+        self, notifier: NotifierAgent
+    ) -> None:
+        update = self._make_update("123456", "draft:job-3")
+        await notifier.handle_callback(update, MagicMock())  # should not raise
+
+    async def test_draft_handler_failure_sends_error_message(self, notifier: NotifierAgent) -> None:
+        notifier.set_draft_handler(AsyncMock(side_effect=RuntimeError("boom")))
+        notifier._bot.send_message = AsyncMock()
+        update = self._make_update("123456", "draft:job-3")
+        await notifier.handle_callback(update, MagicMock())
+        notifier._bot.send_message.assert_awaited_once()
+        call_kwargs = notifier._bot.send_message.call_args.kwargs
+        assert "Failed to draft" in call_kwargs["text"]
+
+    async def test_copy_action_sends_latest_draft_content(self, notifier: NotifierAgent) -> None:
+        draft = MagicMock(content="the draft text")
+        notifier._db.get_proposal_drafts = AsyncMock(return_value=[draft])
+        notifier._bot.send_message = AsyncMock()
+        update = self._make_update("123456", "copy:job-3")
+        await notifier.handle_callback(update, MagicMock())
+        notifier._bot.send_message.assert_awaited_once_with(chat_id="123456", text="the draft text")
+
+    async def test_copy_action_with_no_drafts_sends_nothing(self, notifier: NotifierAgent) -> None:
+        notifier._db.get_proposal_drafts = AsyncMock(return_value=[])
+        notifier._bot.send_message = AsyncMock()
+        update = self._make_update("123456", "copy:job-3")
+        await notifier.handle_callback(update, MagicMock())
+        notifier._bot.send_message.assert_not_awaited()
 
     async def test_rejects_callback_from_unauthorized_chat(self, notifier: NotifierAgent) -> None:
         update = self._make_update("999999", "skip:job-4")
         await notifier.handle_callback(update, MagicMock())
         notifier._db.update_status.assert_not_awaited()
         update.callback_query.answer.assert_awaited_once_with("Unauthorized", show_alert=True)
+
+
+class TestSendProposalDraft:
+    @pytest.fixture
+    def notifier(self, mocker: MockerFixture) -> NotifierAgent:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        db = MagicMock()
+        db.update_status = AsyncMock()
+        return NotifierAgent(bot_token="fake-token", chat_id="123456", db=db)
+
+    async def test_sends_message_with_copy_and_regenerate_buttons(
+        self, notifier: NotifierAgent
+    ) -> None:
+        notifier._bot.send_message = AsyncMock()
+        await notifier.send_proposal_draft("job-9", "draft body text")
+
+        notifier._bot.send_message.assert_awaited_once()
+        call_kwargs = notifier._bot.send_message.call_args.kwargs
+        assert "draft body text" in call_kwargs["text"]
+        buttons = call_kwargs["reply_markup"].inline_keyboard[0]
+        assert buttons[0].callback_data == "copy:job-9"
+        assert buttons[1].callback_data == "regenerate:job-9"
+        notifier._db.update_status.assert_awaited_once_with("job-9", JobStatus.DRAFTED)
+
+
+class TestSendErrorMessage:
+    @pytest.fixture
+    def notifier(self, mocker: MockerFixture) -> NotifierAgent:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        return NotifierAgent(bot_token="fake-token", chat_id="123456", db=MagicMock())
+
+    async def test_sends_plain_error_text(self, notifier: NotifierAgent) -> None:
+        notifier._bot.send_message = AsyncMock()
+        await notifier.send_error_message("something broke")
+        notifier._bot.send_message.assert_awaited_once_with(
+            chat_id="123456", text="⚠️ something broke"
+        )

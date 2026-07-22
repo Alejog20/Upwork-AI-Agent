@@ -17,7 +17,7 @@ from ulysses.graph.nodes import (
     build_scout_node,
 )
 from ulysses.graph.state import UlyssesState
-from ulysses.models import JobPost
+from ulysses.models import GeneratedProposal, JobPost
 
 
 def _state(job: JobPost, **overrides: object) -> UlyssesState:
@@ -70,12 +70,44 @@ class TestNotifierNode:
             await node(_state(fresh_job, score=None))
 
 
-class TestProposalAndPrototypeStubs:
-    async def test_proposal_node_sets_none_draft(self, fresh_job: JobPost) -> None:
-        node = build_proposal_node()
-        result = await node(_state(fresh_job))
-        assert result["proposal_draft"] is None
+class TestProposalNode:
+    async def test_generates_persists_sends_and_updates_state(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        generated = GeneratedProposal(
+            job_id=fresh_job.id,
+            category="automation",
+            hook="hook text",
+            plan_bullets=["one", "two", "three"],
+            proof_repo="repo",
+            proof_repo_url="https://github.com/Alejog20/repo",
+            timeline="3 days",
+            bid_usd=150.0,
+            full_text="the full proposal text",
+        )
+        proposal_agent = AsyncMock()
+        proposal_agent.generate = AsyncMock(return_value=generated)
+        notifier = AsyncMock()
+        db = AsyncMock()
 
+        node = build_proposal_node(proposal_agent, notifier, db, profile)
+        result = await node(_state(fresh_job, score=score))
+
+        proposal_agent.generate.assert_awaited_once_with(fresh_job, score, profile)
+        db.add_proposal_draft.assert_awaited_once_with(fresh_job.id, "the full proposal text")
+        notifier.send_proposal_draft.assert_awaited_once_with(
+            fresh_job.id, "the full proposal text"
+        )
+        assert result["proposal_draft"] == "the full proposal text"
+
+    async def test_raises_if_score_missing(self, fresh_job: JobPost, profile: Profile) -> None:
+        node = build_proposal_node(AsyncMock(), AsyncMock(), AsyncMock(), profile)
+        with pytest.raises(ValueError, match="score"):
+            await node(_state(fresh_job, score=None))
+
+
+class TestPrototypeStub:
     async def test_prototype_node_sets_none_files(self, fresh_job: JobPost) -> None:
         node = build_prototype_node()
         result = await node(_state(fresh_job))

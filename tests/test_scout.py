@@ -55,6 +55,12 @@ class TestRunOnce:
         assert stored is not None
         assert stored.score == score.total_score
 
+        full = await db.get_full_job(job.id)
+        assert full is not None
+        restored_job, restored_score = full
+        assert restored_job.title == job.title
+        assert restored_score.total_score == score.total_score
+
     async def test_skips_already_seen_jobs(self, db: UlyssesDB, profile: Profile) -> None:
         reader = _reader_returning(RawEmail("1", "subj", VALID_EMAIL_HTML, ""))
         scout = ScoutAgent(email_reader=reader, db=db, profile=profile)

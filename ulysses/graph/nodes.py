@@ -13,9 +13,11 @@ from collections.abc import Awaitable, Callable
 from loguru import logger
 
 from ulysses.agents.notifier import NotifierAgent
+from ulysses.agents.proposal import ProposalAgent
 from ulysses.agents.scorer import score_job
 from ulysses.config.profile import Profile
 from ulysses.graph.state import UlyssesState
+from ulysses.tools.db import UlyssesDB
 
 __all__ = [
     "build_done_node",
@@ -71,14 +73,20 @@ def build_notifier_node(notifier: NotifierAgent, profile: Profile) -> GraphNode:
     return notifier_node
 
 
-def build_proposal_node() -> GraphNode:
-    """Build the `proposal` node. Stubbed until Phase 2 implements the Proposal Agent."""
+def build_proposal_node(
+    proposal_agent: ProposalAgent, notifier: NotifierAgent, db: UlyssesDB, profile: Profile
+) -> GraphNode:
+    """Build the `proposal` node: generates a draft, persists it, and sends it to Telegram."""
 
     async def proposal_node(state: UlyssesState) -> UlyssesState:
-        logger.bind(job_id=state["job"].id, agent="proposal").warning(
-            "Proposal Agent not implemented until Phase 2; skipping"
-        )
-        return {**state, "proposal_draft": None}
+        score = state["score"]
+        if score is None:
+            raise ValueError("proposal_node requires state['score'] to be set by scorer_node first")
+        draft = await proposal_agent.generate(state["job"], score, profile)
+        await db.add_proposal_draft(state["job"].id, draft.full_text)
+        await notifier.send_proposal_draft(state["job"].id, draft.full_text)
+        logger.bind(job_id=state["job"].id, agent="proposal").info("Draft generated and sent")
+        return {**state, "proposal_draft": draft.full_text}
 
     return proposal_node
 

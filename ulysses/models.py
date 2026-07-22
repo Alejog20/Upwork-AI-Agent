@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 __all__ = [
     "BudgetRange",
     "BudgetType",
+    "GeneratedProposal",
     "GigCategory",
     "JobPost",
     "JobScore",
@@ -114,3 +115,17 @@ class JobScore(BaseModel):
     gig_category: GigCategory
     red_flags: list[str] = Field(default_factory=list)
     recommendation: Recommendation
+
+
+class GeneratedProposal(BaseModel):
+    """A generated Upwork proposal draft, ready to send or copy."""
+
+    job_id: str
+    category: str
+    hook: str
+    plan_bullets: list[str]
+    proof_repo: str
+    proof_repo_url: str
+    timeline: str
+    bid_usd: float
+    full_text: str

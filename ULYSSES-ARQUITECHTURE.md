@@ -161,29 +161,33 @@ Est. timeline: X days | Suggested bid: $XXX
 **Proposal generation rules (baked into the system prompt):**
 - No greeting ("Hello", "Dear hiring manager")
 - No "I am interested in your project"
-- Tone: confident, brief, expert — not desperate
+- Tone: polite, warm, professional, and human — confident without being arrogant, brief without
+  being curt. Must not read as AI-generated (no "In today's...", "Leveraging my expertise...",
+  "Furthermore/Moreover" transitions, or similar tells)
 - Always reference the specific pain point from the job description
 - Always include at least one GitHub link
 - Address the "new to Upwork, not new to the field" objection naturally
-- Max 200 words
+- Hard cap: 800 characters (enforced by truncating the LLM-generated hook/bullets before the
+  template is filled, so the timeline/bid line is never what gets cut)
+- At most 1-2 emoji, only if genuinely fitting and professional
+- LLM calls are token-aware: the job description is truncated before it's sent, and the
+  completion itself is capped via `max_tokens`, to keep quality high without wasting tokens
 
 **Example output for a scraping job:**
 ```
-Your listings are being updated manually. That's hours of work that 
-should take seconds. 🔍
+Your listings are being updated manually — that's hours of work that should take seconds. 🔍
 
-I built a multi-platform scraper (github.com/Alejog20/Multiple_source_scraper) 
-that handles exactly this — validation, deduplication, error handling, and CSV output.
+Proof: Multiple_source_scraper (github.com/Alejog20/Multiple_source_scraper) — validation,
+dedup, and clean output already built in.
 
-Here's how I'd approach your project:
-• Set up a targeted scraper for [site] using Playwright/BeautifulSoup
-• Add data validation with Pandas and save to CSV/Google Sheets
-• Schedule it via cron or deploy to a lightweight server
-
-Ready to share a working demo in 24h. Want to jump on a quick call first?
+Plan:
+• Targeted scraper for the listing site with Playwright/BeautifulSoup
+• Validation and dedup with Pandas, saved to CSV/Sheets
+• Scheduled via cron or a lightweight server
 
 Timeline: 3 days | Bid: $120
 ```
+(Under the 800-character cap.)
 
 ---
 

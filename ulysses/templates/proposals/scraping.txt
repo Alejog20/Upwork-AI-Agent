@@ -1,0 +1,10 @@
+{hook}
+
+Proof: {proof_repo} ({proof_repo_url}) — validation, dedup, and clean output already built in.
+
+Plan:
+• {plan_bullet_1}
+• {plan_bullet_2}
+• {plan_bullet_3}
+
+Timeline: {timeline} | Bid: ${bid}

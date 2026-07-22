@@ -8,6 +8,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from ulysses.agents.notifier import NotifierAgent
+from ulysses.agents.proposal import ProposalAgent
 from ulysses.config.profile import Profile
 from ulysses.graph.graph import build_graph
 
@@ -18,19 +19,38 @@ def notifier(mocker: MockerFixture) -> NotifierAgent:
     return NotifierAgent(bot_token="fake-token", chat_id="123456", db=MagicMock())
 
 
+@pytest.fixture
+def proposal_agent() -> MagicMock:
+    return MagicMock(spec=ProposalAgent)
+
+
+@pytest.fixture
+def db() -> MagicMock:
+    return MagicMock()
+
+
 class TestBuildGraph:
     def test_compiled_graph_contains_all_expected_nodes(
-        self, profile: Profile, notifier: NotifierAgent
+        self,
+        profile: Profile,
+        notifier: NotifierAgent,
+        proposal_agent: MagicMock,
+        db: MagicMock,
     ) -> None:
-        graph = build_graph(profile, notifier)
+        graph = build_graph(profile, notifier, proposal_agent, db)
         node_names = set(graph.get_graph().nodes.keys())
         assert {"scout", "scorer", "notifier", "proposal", "prototype", "done"} <= node_names
 
     async def test_runs_through_to_the_notifier_interrupt(
-        self, profile: Profile, notifier: NotifierAgent, fresh_job
+        self,
+        profile: Profile,
+        notifier: NotifierAgent,
+        proposal_agent: MagicMock,
+        db: MagicMock,
+        fresh_job,
     ) -> None:
         notifier.handle_scored_job = AsyncMock()
-        graph = build_graph(profile, notifier)
+        graph = build_graph(profile, notifier, proposal_agent, db)
         config = {"configurable": {"thread_id": fresh_job.id}}
 
         result = await graph.ainvoke(

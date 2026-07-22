@@ -71,6 +71,8 @@ class ScoutAgent:
                     category=score.gig_category.value,
                     status=JobStatus.NEW,
                     posted_at=job.posted_at,
+                    job_json=job.model_dump_json(),
+                    score_json=score.model_dump_json(),
                 )
             )
             logger.bind(job_id=job.id, agent="scout").info(
