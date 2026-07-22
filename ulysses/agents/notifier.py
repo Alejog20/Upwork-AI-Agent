@@ -23,7 +23,7 @@ from telegram.ext import CallbackQueryHandler, ContextTypes
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ulysses.config.profile import ScoringConfig
-from ulysses.models import JobPost, JobScore, Recommendation
+from ulysses.models import GeneratedPrototype, JobPost, JobScore, Recommendation
 from ulysses.tools.db import JobStatus, UlyssesDB
 
 __all__ = ["NotifierAgent", "format_job_message"]
@@ -48,6 +48,7 @@ _ACTION_STATUS: dict[str, JobStatus] = {
 }
 
 DraftHandler = Callable[[str], Awaitable[None]]
+BuildHandler = Callable[[str], Awaitable[None]]
 
 
 class NotifierAgent:
@@ -59,6 +60,7 @@ class NotifierAgent:
         chat_id: str,
         db: UlyssesDB,
         on_draft_requested: DraftHandler | None = None,
+        on_build_requested: BuildHandler | None = None,
     ) -> None:
         """Create a Notifier Agent bound to one Telegram chat.
 
@@ -70,21 +72,34 @@ class NotifierAgent:
             on_draft_requested: Async callback invoked with a job id when the
                 Draft or Regenerate button is pressed. Can also be set later
                 via `set_draft_handler` to avoid constructor ordering issues.
+            on_build_requested: Async callback invoked with a job id when the
+                Build Demo button is pressed. Can also be set later via
+                `set_build_handler`.
         """
         self._bot = Bot(token=bot_token)
         self._chat_id = str(chat_id)
         self._db = db
         self._batch_queue: list[tuple[JobPost, JobScore]] = []
         self._on_draft_requested = on_draft_requested
+        self._on_build_requested = on_build_requested
 
     def set_draft_handler(self, handler: DraftHandler) -> None:
         """Register the callback invoked when the Draft or Regenerate button is pressed."""
         self._on_draft_requested = handler
 
+    def set_build_handler(self, handler: BuildHandler) -> None:
+        """Register the callback invoked when the Build Demo button is pressed."""
+        self._on_build_requested = handler
+
     @_telegram_send_retry
     async def _send_message(self, **kwargs: Any) -> None:
         """Send a Telegram message, retrying on transient network errors."""
         await self._bot.send_message(**kwargs)
+
+    @_telegram_send_retry
+    async def _send_document(self, **kwargs: Any) -> None:
+        """Send a Telegram document, retrying on transient network errors."""
+        await self._bot.send_document(**kwargs)
 
     @property
     def callback_handler(self) -> CallbackQueryHandler:
@@ -153,10 +168,11 @@ class NotifierAgent:
             logger.bind(job_id=job_id, agent="notifier").info("User action: {}", action)
         elif action in ("draft", "regenerate"):
             await self._request_draft(job_id, action)
+        elif action == "build":
+            await self._request_build(job_id)
         elif action == "copy":
             await self._send_plain_copy(job_id)
         else:
-            # "build" is wired up starting Phase 3.
             logger.bind(job_id=job_id, agent="notifier").info(
                 "User requested: {} (not yet implemented)", action
             )
@@ -176,6 +192,23 @@ class NotifierAgent:
             except Exception:
                 logger.bind(job_id=job_id, agent="notifier").exception(
                     "Also failed to notify about the draft failure"
+                )
+
+    async def _request_build(self, job_id: str) -> None:
+        if self._on_build_requested is None:
+            logger.bind(job_id=job_id, agent="notifier").warning(
+                "build requested but no build handler is wired"
+            )
+            return
+        try:
+            await self._on_build_requested(job_id)
+        except Exception as exc:
+            logger.bind(job_id=job_id, agent="notifier").exception("Prototype generation failed")
+            try:
+                await self.send_error_message(f"Failed to build a demo for this job: {exc}")
+            except Exception:
+                logger.bind(job_id=job_id, agent="notifier").exception(
+                    "Also failed to notify about the build failure"
                 )
 
     async def _send_plain_copy(self, job_id: str) -> None:
@@ -208,6 +241,20 @@ class NotifierAgent:
         )
         await self._db.update_status(job_id, JobStatus.DRAFTED)
         logger.bind(job_id=job_id, agent="notifier").info("Sent proposal draft to Telegram")
+
+    async def send_prototype_zip(
+        self, job_id: str, prototype: GeneratedPrototype, zip_bytes: bytes
+    ) -> None:
+        """Send a generated prototype as a Telegram document, plus a README preview."""
+        await self._send_document(
+            chat_id=self._chat_id,
+            document=zip_bytes,
+            filename=prototype.zip_filename,
+            caption=f"Demo prototype ({prototype.category})",
+        )
+        await self._send_message(chat_id=self._chat_id, text=prototype.readme_md)
+        await self._db.update_status(job_id, JobStatus.BUILT)
+        logger.bind(job_id=job_id, agent="notifier").info("Sent prototype zip to Telegram")
 
     async def send_error_message(self, text: str) -> None:
         """Surface an agent failure to the user as a plain Telegram message."""

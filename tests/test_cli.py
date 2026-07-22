@@ -1,20 +1,27 @@
 """Tests for the Telegram startup/shutdown resilience helpers in `ulysses.cli.main`.
 
 Scope is intentionally narrow: full CLI command testing (Typer's `CliRunner`
-over `start`/`status`/`draft`) is a Phase 4 concern. These tests cover the
-error-handling behavior added to make `ulysses start` resilient to transient
-Telegram network failures instead of crashing the whole process.
+over `start`/`status`/`draft`/`build`/`go`) is a Phase 4 concern. These tests
+cover the error-handling behavior added to make `ulysses start` resilient to
+transient Telegram network failures instead of crashing the whole process,
+plus the pure disk-writing helper used by `build`/`go`.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pytest_mock import MockerFixture
 from telegram.error import InvalidToken, NetworkError, TimedOut
 
-from ulysses.cli.main import _shutdown_telegram, _start_telegram_with_retry
+from ulysses.cli.main import (
+    _shutdown_telegram,
+    _start_telegram_with_retry,
+    _write_prototype_to_disk,
+)
+from ulysses.models import GeneratedPrototype
 
 
 def _telegram_app() -> MagicMock:
@@ -94,3 +101,27 @@ class TestShutdownTelegram:
         app.stop = AsyncMock(side_effect=NetworkError("boom"))
 
         await _shutdown_telegram(app)  # must not raise
+
+
+class TestWritePrototypeToDisk:
+    def test_writes_all_four_files_under_output_job_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        prototype = GeneratedPrototype(
+            job_id="job-1",
+            category="scraper",
+            demo_script="print('hi')",
+            requirements_txt="requests==2.32.3\n",
+            readme_md="# Demo\n",
+            config_example_env="# none needed\n",
+            zip_filename="ulysses_demo_job-1.zip",
+        )
+
+        output_dir = _write_prototype_to_disk(prototype, "job-1")
+
+        assert output_dir == Path("output") / "job-1"
+        assert (output_dir / "demo.py").read_text() == "print('hi')"
+        assert (output_dir / "requirements.txt").read_text() == "requests==2.32.3\n"
+        assert (output_dir / "README.md").read_text() == "# Demo\n"
+        assert (output_dir / "config.example.env").read_text() == "# none needed\n"

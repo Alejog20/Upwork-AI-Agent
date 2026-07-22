@@ -9,6 +9,7 @@ from pytest_mock import MockerFixture
 
 from ulysses.agents.notifier import NotifierAgent
 from ulysses.agents.proposal import ProposalAgent
+from ulysses.agents.prototype import PrototypeAgent
 from ulysses.config.profile import Profile
 from ulysses.graph.graph import build_graph
 
@@ -25,6 +26,11 @@ def proposal_agent() -> MagicMock:
 
 
 @pytest.fixture
+def prototype_agent() -> MagicMock:
+    return MagicMock(spec=PrototypeAgent)
+
+
+@pytest.fixture
 def db() -> MagicMock:
     return MagicMock()
 
@@ -35,9 +41,10 @@ class TestBuildGraph:
         profile: Profile,
         notifier: NotifierAgent,
         proposal_agent: MagicMock,
+        prototype_agent: MagicMock,
         db: MagicMock,
     ) -> None:
-        graph = build_graph(profile, notifier, proposal_agent, db)
+        graph = build_graph(profile, notifier, proposal_agent, prototype_agent, db)
         node_names = set(graph.get_graph().nodes.keys())
         assert {"scout", "scorer", "notifier", "proposal", "prototype", "done"} <= node_names
 
@@ -46,11 +53,12 @@ class TestBuildGraph:
         profile: Profile,
         notifier: NotifierAgent,
         proposal_agent: MagicMock,
+        prototype_agent: MagicMock,
         db: MagicMock,
         fresh_job,
     ) -> None:
         notifier.handle_scored_job = AsyncMock()
-        graph = build_graph(profile, notifier, proposal_agent, db)
+        graph = build_graph(profile, notifier, proposal_agent, prototype_agent, db)
         config = {"configurable": {"thread_id": fresh_job.id}}
 
         result = await graph.ainvoke(

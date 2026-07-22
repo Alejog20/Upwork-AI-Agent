@@ -17,7 +17,7 @@ from ulysses.graph.nodes import (
     build_scout_node,
 )
 from ulysses.graph.state import UlyssesState
-from ulysses.models import GeneratedProposal, JobPost
+from ulysses.models import GeneratedProposal, GeneratedPrototype, JobPost
 
 
 def _state(job: JobPost, **overrides: object) -> UlyssesState:
@@ -107,11 +107,44 @@ class TestProposalNode:
             await node(_state(fresh_job, score=None))
 
 
-class TestPrototypeStub:
-    async def test_prototype_node_sets_none_files(self, fresh_job: JobPost) -> None:
-        node = build_prototype_node()
-        result = await node(_state(fresh_job))
-        assert result["prototype_files"] is None
+class TestPrototypeNode:
+    async def test_generates_persists_sends_and_updates_state(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        generated = GeneratedPrototype(
+            job_id=fresh_job.id,
+            category="scraper",
+            demo_script="print('hi')",
+            requirements_txt="requests==2.32.3\n",
+            readme_md="# Demo\n",
+            config_example_env="# none needed\n",
+            zip_filename=f"ulysses_demo_{fresh_job.id}.zip",
+        )
+        prototype_agent = AsyncMock()
+        prototype_agent.generate = AsyncMock(return_value=generated)
+        notifier = AsyncMock()
+        db = AsyncMock()
+
+        node = build_prototype_node(prototype_agent, notifier, db, profile)
+        result = await node(_state(fresh_job, score=score))
+
+        prototype_agent.generate.assert_awaited_once_with(fresh_job, score, profile)
+        assert db.add_prototype_file.await_count == 4
+        notifier.send_prototype_zip.assert_awaited_once()
+        assert notifier.send_prototype_zip.call_args.args[0] == fresh_job.id
+        assert notifier.send_prototype_zip.call_args.args[1] == generated
+        assert result["prototype_files"] == {
+            "demo.py": "print('hi')",
+            "requirements.txt": "requests==2.32.3\n",
+            "README.md": "# Demo\n",
+            "config.example.env": "# none needed\n",
+        }
+
+    async def test_raises_if_score_missing(self, fresh_job: JobPost, profile: Profile) -> None:
+        node = build_prototype_node(AsyncMock(), AsyncMock(), AsyncMock(), profile)
+        with pytest.raises(ValueError, match="score"):
+            await node(_state(fresh_job, score=None))
 
 
 class TestDoneNode:

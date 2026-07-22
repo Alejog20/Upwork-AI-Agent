@@ -14,6 +14,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ulysses.agents.notifier import NotifierAgent
 from ulysses.agents.proposal import ProposalAgent
+from ulysses.agents.prototype import PrototypeAgent
 from ulysses.config.profile import Profile
 from ulysses.graph.edges import route_user_action
 from ulysses.graph.nodes import (
@@ -34,6 +35,7 @@ def build_graph(
     profile: Profile,
     notifier: NotifierAgent,
     proposal_agent: ProposalAgent,
+    prototype_agent: PrototypeAgent,
     db: UlyssesDB,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
@@ -43,7 +45,8 @@ def build_graph(
         profile: The freelancer's profile, injected into the scorer/notifier nodes.
         notifier: The Telegram Notifier Agent, injected into the notifier node.
         proposal_agent: The Proposal Agent, injected into the proposal node.
-        db: Persistence layer, injected into the proposal node to store drafts.
+        prototype_agent: The Prototype Agent, injected into the prototype node.
+        db: Persistence layer, injected into the proposal/prototype nodes.
         checkpointer: Persists state across the human-in-the-loop interrupt.
             Defaults to an in-memory saver, which does not survive a process
             restart while a job is awaiting a button press — swap in a
@@ -59,7 +62,7 @@ def build_graph(
     graph.add_node("scorer", build_scorer_node(profile))
     graph.add_node("notifier", build_notifier_node(notifier, profile))
     graph.add_node("proposal", build_proposal_node(proposal_agent, notifier, db, profile))
-    graph.add_node("prototype", build_prototype_node())
+    graph.add_node("prototype", build_prototype_node(prototype_agent, notifier, db, profile))
     graph.add_node("done", build_done_node())
 
     graph.set_entry_point("scout")
