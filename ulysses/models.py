@@ -17,6 +17,7 @@ __all__ = [
     "BudgetRange",
     "BudgetType",
     "GeneratedProposal",
+    "GeneratedPrototype",
     "GigCategory",
     "JobPost",
     "JobScore",
@@ -129,3 +130,15 @@ class GeneratedProposal(BaseModel):
     timeline: str
     bid_usd: float
     full_text: str
+
+
+class GeneratedPrototype(BaseModel):
+    """A generated demo prototype: a runnable script, requirements, README, and env template."""
+
+    job_id: str
+    category: str
+    demo_script: str
+    requirements_txt: str
+    readme_md: str
+    config_example_env: str
+    zip_filename: str

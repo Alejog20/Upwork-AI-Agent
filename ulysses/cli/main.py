@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 import typer
 from loguru import logger
@@ -16,11 +17,12 @@ from telegram.ext import Application
 
 from ulysses.agents.notifier import NotifierAgent
 from ulysses.agents.proposal import ProposalAgent
+from ulysses.agents.prototype import PrototypeAgent, build_prototype_zip
 from ulysses.agents.scout import ScoutAgent
 from ulysses.config.profile import Profile, load_profile
 from ulysses.config.settings import Settings, get_settings
 from ulysses.graph.graph import build_graph
-from ulysses.models import JobPost, JobScore
+from ulysses.models import GeneratedPrototype, JobPost, JobScore
 from ulysses.tools.db import UlyssesDB
 from ulysses.tools.email_reader import EmailReader
 
@@ -82,6 +84,38 @@ def _make_draft_handler(
     return on_draft_requested
 
 
+def _make_build_handler(
+    db: UlyssesDB, prototype_agent: PrototypeAgent, notifier: NotifierAgent, profile: Profile
+) -> Callable[[str], Awaitable[None]]:
+    async def on_build_requested(job_id: str) -> None:
+        full = await db.get_full_job(job_id)
+        if full is None:
+            logger.warning("Build requested for unknown or pre-Phase-2 job_id={}", job_id)
+            await notifier.send_error_message(
+                "Can't build a demo for this job — it was seen before detailed data was stored."
+            )
+            return
+        job, score = full
+        prototype = await prototype_agent.generate(job, score, profile)
+        await _persist_prototype_files(db, job_id, prototype)
+        zip_bytes = build_prototype_zip(prototype)
+        await notifier.send_prototype_zip(job_id, prototype, zip_bytes)
+
+    return on_build_requested
+
+
+async def _persist_prototype_files(
+    db: UlyssesDB, job_id: str, prototype: GeneratedPrototype
+) -> None:
+    for filename, content in (
+        ("demo.py", prototype.demo_script),
+        ("requirements.txt", prototype.requirements_txt),
+        ("README.md", prototype.readme_md),
+        ("config.example.env", prototype.config_example_env),
+    ):
+        await db.add_prototype_file(job_id, filename, content)
+
+
 @app.command()
 def start() -> None:
     """Start the Ulysses monitoring loop: scout, score, and notify via Telegram."""
@@ -117,8 +151,10 @@ async def _run_forever(settings: Settings, profile: Profile) -> None:
     await db.init()
 
     proposal_agent = ProposalAgent()
-    graph = build_graph(profile, notifier, proposal_agent, db)
+    prototype_agent = PrototypeAgent()
+    graph = build_graph(profile, notifier, proposal_agent, prototype_agent, db)
     notifier.set_draft_handler(_make_draft_handler(db, proposal_agent, notifier, profile))
+    notifier.set_build_handler(_make_build_handler(db, prototype_agent, notifier, profile))
 
     async def on_scored_job(job: JobPost, score: JobScore) -> None:
         config = {"configurable": {"thread_id": job.id}}
@@ -243,20 +279,7 @@ async def _draft_async(settings: Settings, profile: Profile, url: str) -> None:
     db = UlyssesDB(settings.db_path)
     await db.init()
     try:
-        job_row = await db.get_job_by_url(url)
-        if job_row is None:
-            console.print(f"[red]No job found for URL:[/red] {url}")
-            console.print("Ulysses only knows about jobs it has already seen via email.")
-            raise typer.Exit(code=1)
-
-        full = await db.get_full_job(job_row.id)
-        if full is None:
-            console.print(
-                "[red]This job predates detailed storage — re-run scout to refresh it.[/red]"
-            )
-            raise typer.Exit(code=1)
-
-        job, score = full
+        job, score = await _lookup_full_job(db, url)
         proposal_agent = ProposalAgent()
         with console.status("[bold cyan]Drafting proposal...[/bold cyan]"):
             generated = await proposal_agent.generate(job, score, profile)
@@ -267,5 +290,88 @@ async def _draft_async(settings: Settings, profile: Profile, url: str) -> None:
             f"[dim]Category: {generated.category} | Timeline: {generated.timeline} | "
             f"Bid: ${generated.bid_usd:.0f}[/dim]"
         )
+    finally:
+        await db.dispose()
+
+
+async def _lookup_full_job(db: UlyssesDB, url: str) -> tuple[JobPost, JobScore]:
+    job_row = await db.get_job_by_url(url)
+    if job_row is None:
+        console.print(f"[red]No job found for URL:[/red] {url}")
+        console.print("Ulysses only knows about jobs it has already seen via email.")
+        raise typer.Exit(code=1)
+
+    full = await db.get_full_job(job_row.id)
+    if full is None:
+        console.print("[red]This job predates detailed storage — re-run scout to refresh it.[/red]")
+        raise typer.Exit(code=1)
+    return full
+
+
+def _write_prototype_to_disk(prototype: GeneratedPrototype, job_id: str) -> Path:
+    output_dir = Path("./output") / job_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "demo.py").write_text(prototype.demo_script, encoding="utf-8")
+    (output_dir / "requirements.txt").write_text(prototype.requirements_txt, encoding="utf-8")
+    (output_dir / "README.md").write_text(prototype.readme_md, encoding="utf-8")
+    (output_dir / "config.example.env").write_text(prototype.config_example_env, encoding="utf-8")
+    return output_dir
+
+
+@app.command()
+def build(url: str) -> None:
+    """Build a demo prototype for a job Ulysses has already seen, saved to ./output/<job_id>/."""
+    settings = get_settings()
+    profile = load_profile(settings.profile_path)
+    asyncio.run(_build_async(settings, profile, url))
+
+
+async def _build_async(settings: Settings, profile: Profile, url: str) -> None:
+    db = UlyssesDB(settings.db_path)
+    await db.init()
+    try:
+        job, score = await _lookup_full_job(db, url)
+        prototype_agent = PrototypeAgent()
+        with console.status("[bold cyan]Building prototype...[/bold cyan]"):
+            generated = await prototype_agent.generate(job, score, profile)
+        await _persist_prototype_files(db, job.id, generated)
+
+        output_dir = _write_prototype_to_disk(generated, job.id)
+        console.print(f"[green]Prototype written to {output_dir}[/green]")
+        console.print(Panel(generated.readme_md, title="README.md"))
+    finally:
+        await db.dispose()
+
+
+@app.command()
+def go(url: str) -> None:
+    """Draft a proposal AND build a demo for a job, saved to ./output/<job_id>/."""
+    settings = get_settings()
+    profile = load_profile(settings.profile_path)
+    asyncio.run(_go_async(settings, profile, url))
+
+
+async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
+    db = UlyssesDB(settings.db_path)
+    await db.init()
+    try:
+        job, score = await _lookup_full_job(db, url)
+
+        proposal_agent = ProposalAgent()
+        prototype_agent = PrototypeAgent()
+        with console.status("[bold cyan]Drafting proposal and building prototype...[/bold cyan]"):
+            proposal, prototype = await asyncio.gather(
+                proposal_agent.generate(job, score, profile),
+                prototype_agent.generate(job, score, profile),
+            )
+        await db.add_proposal_draft(job.id, proposal.full_text)
+        await _persist_prototype_files(db, job.id, prototype)
+
+        output_dir = _write_prototype_to_disk(prototype, job.id)
+        (output_dir / "proposal.txt").write_text(proposal.full_text, encoding="utf-8")
+
+        console.print(f"[green]Output written to {output_dir}[/green]")
+        console.print(Panel(proposal.full_text, title="Proposal"))
+        console.print(Panel(prototype.readme_md, title="README.md"))
     finally:
         await db.dispose()

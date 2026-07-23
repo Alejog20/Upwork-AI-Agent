@@ -12,7 +12,7 @@ from telegram.error import NetworkError, TimedOut
 from ulysses.agents.notifier import NotifierAgent, format_job_message
 from ulysses.agents.scorer import score_job
 from ulysses.config.profile import Profile
-from ulysses.models import JobPost, JobScore
+from ulysses.models import GeneratedPrototype, JobPost, JobScore
 from ulysses.tools.db import JobStatus
 
 
@@ -165,6 +165,28 @@ class TestNotifierAgentCallbackHandling:
         call_kwargs = notifier._bot.send_message.call_args.kwargs
         assert "Failed to draft" in call_kwargs["text"]
 
+    async def test_build_action_invokes_build_handler(self, notifier: NotifierAgent) -> None:
+        handler = AsyncMock()
+        notifier.set_build_handler(handler)
+        update = self._make_update("123456", "build:job-5")
+        await notifier.handle_callback(update, MagicMock())
+        handler.assert_awaited_once_with("job-5")
+
+    async def test_build_with_no_handler_wired_does_not_raise(
+        self, notifier: NotifierAgent
+    ) -> None:
+        update = self._make_update("123456", "build:job-5")
+        await notifier.handle_callback(update, MagicMock())  # should not raise
+
+    async def test_build_handler_failure_sends_error_message(self, notifier: NotifierAgent) -> None:
+        notifier.set_build_handler(AsyncMock(side_effect=RuntimeError("boom")))
+        notifier._bot.send_message = AsyncMock()
+        update = self._make_update("123456", "build:job-5")
+        await notifier.handle_callback(update, MagicMock())
+        notifier._bot.send_message.assert_awaited_once()
+        call_kwargs = notifier._bot.send_message.call_args.kwargs
+        assert "Failed to build" in call_kwargs["text"]
+
     async def test_copy_action_sends_latest_draft_content(self, notifier: NotifierAgent) -> None:
         draft = MagicMock(content="the draft text")
         notifier._db.get_proposal_drafts = AsyncMock(return_value=[draft])
@@ -208,6 +230,40 @@ class TestSendProposalDraft:
         assert buttons[0].callback_data == "copy:job-9"
         assert buttons[1].callback_data == "regenerate:job-9"
         notifier._db.update_status.assert_awaited_once_with("job-9", JobStatus.DRAFTED)
+
+
+class TestSendPrototypeZip:
+    @pytest.fixture
+    def notifier(self, mocker: MockerFixture) -> NotifierAgent:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        db = MagicMock()
+        db.update_status = AsyncMock()
+        return NotifierAgent(bot_token="fake-token", chat_id="123456", db=db)
+
+    async def test_sends_document_and_readme_preview(self, notifier: NotifierAgent) -> None:
+        prototype = GeneratedPrototype(
+            job_id="job-9",
+            category="scraper",
+            demo_script="print('hi')",
+            requirements_txt="requests==2.32.3\n",
+            readme_md="# Demo README content",
+            config_example_env="# none needed\n",
+            zip_filename="ulysses_demo_job-9.zip",
+        )
+        notifier._bot.send_document = AsyncMock()
+        notifier._bot.send_message = AsyncMock()
+
+        await notifier.send_prototype_zip("job-9", prototype, b"zip-bytes")
+
+        notifier._bot.send_document.assert_awaited_once()
+        doc_kwargs = notifier._bot.send_document.call_args.kwargs
+        assert doc_kwargs["document"] == b"zip-bytes"
+        assert doc_kwargs["filename"] == "ulysses_demo_job-9.zip"
+
+        notifier._bot.send_message.assert_awaited_once_with(
+            chat_id="123456", text="# Demo README content"
+        )
+        notifier._db.update_status.assert_awaited_once_with("job-9", JobStatus.BUILT)
 
 
 class TestSendErrorMessage:

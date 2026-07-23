@@ -14,6 +14,7 @@ from loguru import logger
 
 from ulysses.agents.notifier import NotifierAgent
 from ulysses.agents.proposal import ProposalAgent
+from ulysses.agents.prototype import PrototypeAgent, build_prototype_zip
 from ulysses.agents.scorer import score_job
 from ulysses.config.profile import Profile
 from ulysses.graph.state import UlyssesState
@@ -91,14 +92,30 @@ def build_proposal_node(
     return proposal_node
 
 
-def build_prototype_node() -> GraphNode:
-    """Build the `prototype` node. Stubbed until Phase 3 implements the Prototype Agent."""
+def build_prototype_node(
+    prototype_agent: PrototypeAgent, notifier: NotifierAgent, db: UlyssesDB, profile: Profile
+) -> GraphNode:
+    """Build the `prototype` node: generates a demo, persists it, and sends it to Telegram."""
 
     async def prototype_node(state: UlyssesState) -> UlyssesState:
-        logger.bind(job_id=state["job"].id, agent="prototype").warning(
-            "Prototype Agent not implemented until Phase 3; skipping"
-        )
-        return {**state, "prototype_files": None}
+        score = state["score"]
+        if score is None:
+            raise ValueError(
+                "prototype_node requires state['score'] to be set by scorer_node first"
+            )
+        prototype = await prototype_agent.generate(state["job"], score, profile)
+        files = {
+            "demo.py": prototype.demo_script,
+            "requirements.txt": prototype.requirements_txt,
+            "README.md": prototype.readme_md,
+            "config.example.env": prototype.config_example_env,
+        }
+        for filename, content in files.items():
+            await db.add_prototype_file(state["job"].id, filename, content)
+        zip_bytes = build_prototype_zip(prototype)
+        await notifier.send_prototype_zip(state["job"].id, prototype, zip_bytes)
+        logger.bind(job_id=state["job"].id, agent="prototype").info("Prototype generated and sent")
+        return {**state, "prototype_files": files}
 
     return prototype_node
 
