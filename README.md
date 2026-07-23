@@ -7,10 +7,10 @@ Telegram with one-tap actions to draft a proposal or build a demo prototype.
 See `ULYSSES-ARQUITECHTURE.md` for the full system design and `CLAUDE.md` for
 project development standards.
 
-Current status: **Phase 3** — Scout, Scorer, Telegram notifier, the Proposal
-Agent, and the Prototype Agent are all live (skip/archive/draft/regenerate/
-copy/build all working). The macOS menu bar app and auto-start land in
-Phase 4.
+Current status: **Phase 4** — all five agents are live, the CLI is complete
+(`start`, `status`, `draft`, `build`, `go`, `queue`, `archive`, `config`,
+`install`/`uninstall`), and there's a native macOS menu bar app with
+LaunchAgent auto-start. Phase 5 (analytics/win-rate tuning) is next.
 
 ## Requirements
 
@@ -99,6 +99,43 @@ uv run ulysses build https://www.upwork.com/jobs/~0112345678901234
 
 # Both at once, written to ./output/<job_id>/ (includes proposal.txt)
 uv run ulysses go https://www.upwork.com/jobs/~0112345678901234
+```
+
+List or manage jobs directly:
+
+```bash
+uv run ulysses queue --min-score 70 --category tier1
+uv run ulysses archive <job_id>
+```
+
+View or update your `profile.yaml` from the terminal:
+
+```bash
+uv run ulysses config show
+uv run ulysses config set freelancer.rate_usd_hr 30
+uv run ulysses config set skills.primary "python,fastapi,scraping"
+```
+
+(Scalar fields are type-coerced automatically; comma-separated values are
+split into a list. Nested list-of-object fields like `repos` aren't settable
+this way — edit `profile.yaml` directly for those.)
+
+## Running 24/7
+
+Install a macOS LaunchAgent so `ulysses start` runs in the background and
+restarts automatically on login or crash:
+
+```bash
+uv run ulysses install    # writes ~/Library/LaunchAgents/com.ulysses.agent.plist and loads it
+uv run ulysses uninstall  # unloads and removes it
+```
+
+Or run the native menu bar app instead, which runs the same agent loop with
+a status icon, live job/proposal/prototype counts, Pause/Resume, a shortcut
+to open the job queue, and native macOS notifications for high-scoring jobs:
+
+```bash
+uv run python -m ulysses.app.menubar
 ```
 
 ## Development

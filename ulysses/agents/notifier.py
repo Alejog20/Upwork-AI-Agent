@@ -11,6 +11,7 @@ Alerting is threshold-based:
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,7 +27,7 @@ from ulysses.config.profile import ScoringConfig
 from ulysses.models import GeneratedPrototype, JobPost, JobScore, Recommendation
 from ulysses.tools.db import JobStatus, UlyssesDB
 
-__all__ = ["NotifierAgent", "format_job_message"]
+__all__ = ["InstantAlertHook", "NotifierAgent", "format_job_message"]
 
 _telegram_send_retry = retry(
     retry=retry_if_exception_type((NetworkError, RetryAfter)),
@@ -49,6 +50,7 @@ _ACTION_STATUS: dict[str, JobStatus] = {
 
 DraftHandler = Callable[[str], Awaitable[None]]
 BuildHandler = Callable[[str], Awaitable[None]]
+InstantAlertHook = Callable[[JobPost, JobScore], None]
 
 
 class NotifierAgent:
@@ -61,6 +63,7 @@ class NotifierAgent:
         db: UlyssesDB,
         on_draft_requested: DraftHandler | None = None,
         on_build_requested: BuildHandler | None = None,
+        on_instant_alert: InstantAlertHook | None = None,
     ) -> None:
         """Create a Notifier Agent bound to one Telegram chat.
 
@@ -75,6 +78,12 @@ class NotifierAgent:
             on_build_requested: Async callback invoked with a job id when the
                 Build Demo button is pressed. Can also be set later via
                 `set_build_handler`.
+            on_instant_alert: Sync callback invoked with `(job, score)` for
+                jobs that clear the instant-alert threshold, right after the
+                Telegram message is sent -- used by the menu bar app to also
+                post a native macOS notification. Sync (not async) because
+                `rumps.notification()` is itself a plain sync call. Never
+                fires for batched or silently-archived jobs.
         """
         self._bot = Bot(token=bot_token)
         self._chat_id = str(chat_id)
@@ -82,6 +91,7 @@ class NotifierAgent:
         self._batch_queue: list[tuple[JobPost, JobScore]] = []
         self._on_draft_requested = on_draft_requested
         self._on_build_requested = on_build_requested
+        self._on_instant_alert = on_instant_alert
 
     def set_draft_handler(self, handler: DraftHandler) -> None:
         """Register the callback invoked when the Draft or Regenerate button is pressed."""
@@ -90,6 +100,10 @@ class NotifierAgent:
     def set_build_handler(self, handler: BuildHandler) -> None:
         """Register the callback invoked when the Build Demo button is pressed."""
         self._on_build_requested = handler
+
+    def set_instant_alert_hook(self, hook: InstantAlertHook) -> None:
+        """Register the callback invoked when a job clears the instant-alert threshold."""
+        self._on_instant_alert = hook
 
     @_telegram_send_retry
     async def _send_message(self, **kwargs: Any) -> None:
@@ -112,6 +126,13 @@ class NotifierAgent:
         """Route a scored job to immediate send, batch queue, or silent archive."""
         if score.total_score >= thresholds.instant_alert_threshold:
             await self._send_job_alert(job, score)
+            if self._on_instant_alert is not None:
+                try:
+                    self._on_instant_alert(job, score)
+                except Exception:
+                    logger.bind(job_id=job.id, agent="notifier").exception(
+                        "Instant-alert hook failed (e.g. macOS notification)"
+                    )
         elif score.total_score >= thresholds.min_score_to_notify:
             self._batch_queue.append((job, score))
             logger.bind(job_id=job.id, agent="notifier").info("Queued for batched alert")
@@ -128,10 +149,16 @@ class NotifierAgent:
         for job, score in pending:
             await self._send_job_alert(job, score)
 
-    async def run_batch_loop(self, batch_interval_minutes: int) -> None:
-        """Flush the batch queue on a fixed interval, forever."""
+    async def run_batch_loop(
+        self, batch_interval_minutes: int, *, stop_event: threading.Event | None = None
+    ) -> None:
+        """Flush the batch queue on a fixed interval, until `stop_event` is set.
+
+        `stop_event` is a `threading.Event` for the same cross-thread reason
+        as `ScoutAgent.run_forever`'s -- see that docstring.
+        """
         interval = timedelta(minutes=batch_interval_minutes).total_seconds()
-        while True:
+        while stop_event is None or not stop_event.is_set():
             await asyncio.sleep(interval)
             await self.flush_batch()
 

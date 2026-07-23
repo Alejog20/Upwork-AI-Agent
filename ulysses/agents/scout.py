@@ -8,6 +8,7 @@ layer is responsible for wiring scout output to the notifier).
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
 
 from loguru import logger
@@ -83,22 +84,40 @@ class ScoutAgent:
         return scored_jobs
 
     async def run_forever(
-        self, poll_interval_seconds: int, on_scored_job: ScoredJobCallback
+        self,
+        poll_interval_seconds: int,
+        on_scored_job: ScoredJobCallback,
+        *,
+        stop_event: threading.Event | None = None,
+        paused_event: threading.Event | None = None,
     ) -> None:
         """Poll indefinitely, invoking `on_scored_job` for each newly scored job.
+
+        `stop_event`/`paused_event` are plain `threading.Event`s (not
+        `asyncio.Event`s) because the menu bar app toggles them from rumps'
+        native Cocoa event loop, which runs on a different thread than this
+        coroutine -- `threading.Event.is_set()` is safe to poll cross-thread.
 
         Args:
             poll_interval_seconds: Delay between polls.
             on_scored_job: Async callback invoked once per new `(JobPost, JobScore)`.
+            stop_event: If set, the loop exits before the next poll. Defaults
+                to never stopping (plain CLI usage doesn't need this).
+            paused_event: While set, polling is skipped for that cycle, but
+                the loop keeps checking `stop_event` on schedule. Defaults to
+                never paused.
         """
-        while True:
-            try:
-                scored_jobs = await self.run_once()
-            except Exception:
-                logger.exception("Scout polling cycle failed; will retry next interval")
-                scored_jobs = []
+        while stop_event is None or not stop_event.is_set():
+            if paused_event is not None and paused_event.is_set():
+                logger.debug("Scout is paused; skipping this poll cycle")
+            else:
+                try:
+                    scored_jobs = await self.run_once()
+                except Exception:
+                    logger.exception("Scout polling cycle failed; will retry next interval")
+                    scored_jobs = []
 
-            for job, score in scored_jobs:
-                await on_scored_job(job, score)
+                for job, score in scored_jobs:
+                    await on_scored_job(job, score)
 
             await asyncio.sleep(poll_interval_seconds)

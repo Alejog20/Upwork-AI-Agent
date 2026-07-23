@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -69,6 +70,41 @@ class TestNotifierAgentThresholdRouting:
         notifier._bot.send_message.assert_awaited_once()
         notifier._db.update_status.assert_awaited_once_with(fresh_job.id, JobStatus.NOTIFIED)
 
+    async def test_instant_alert_invokes_instant_alert_hook(
+        self, notifier: NotifierAgent, fresh_job: JobPost, fresh_score: JobScore, profile: Profile
+    ) -> None:
+        notifier._bot.send_message = AsyncMock()
+        hook = MagicMock()
+        notifier.set_instant_alert_hook(hook)
+
+        await notifier.handle_scored_job(fresh_job, fresh_score, profile.scoring)
+
+        hook.assert_called_once_with(fresh_job, fresh_score)
+
+    async def test_instant_alert_hook_failure_does_not_break_telegram_send(
+        self, notifier: NotifierAgent, fresh_job: JobPost, fresh_score: JobScore, profile: Profile
+    ) -> None:
+        notifier._bot.send_message = AsyncMock()
+        notifier.set_instant_alert_hook(MagicMock(side_effect=RuntimeError("boom")))
+
+        await notifier.handle_scored_job(fresh_job, fresh_score, profile.scoring)  # must not raise
+
+        notifier._bot.send_message.assert_awaited_once()
+
+    async def test_hook_is_not_invoked_for_batched_or_silent_jobs(
+        self, notifier: NotifierAgent, fresh_job: JobPost, fresh_score: JobScore, profile: Profile
+    ) -> None:
+        notifier._bot.send_message = AsyncMock()
+        hook = MagicMock()
+        notifier.set_instant_alert_hook(hook)
+
+        mid_score = fresh_score.model_copy(update={"total_score": 60.0})
+        await notifier.handle_scored_job(fresh_job, mid_score, profile.scoring)
+        low_score = fresh_score.model_copy(update={"total_score": 10.0})
+        await notifier.handle_scored_job(fresh_job, low_score, profile.scoring)
+
+        hook.assert_not_called()
+
     async def test_mid_score_is_queued_not_sent(
         self, notifier: NotifierAgent, fresh_job: JobPost, fresh_score: JobScore, profile: Profile
     ) -> None:
@@ -101,6 +137,41 @@ class TestNotifierAgentThresholdRouting:
         notifier._bot.send_message = AsyncMock()
         await notifier.flush_batch()
         notifier._bot.send_message.assert_not_awaited()
+
+
+class TestRunBatchLoop:
+    @pytest.fixture
+    def notifier(self, mocker: MockerFixture) -> NotifierAgent:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        db = MagicMock()
+        db.update_status = AsyncMock()
+        return NotifierAgent(bot_token="fake-token", chat_id="123456", db=db)
+
+    async def test_stop_event_ends_the_loop_immediately(self, notifier: NotifierAgent) -> None:
+        stop_event = threading.Event()
+        stop_event.set()
+
+        # Should return without ever sleeping or flushing -- no mocking needed.
+        await notifier.run_batch_loop(30, stop_event=stop_event)
+
+    async def test_flushes_on_each_interval_until_stopped(
+        self, notifier: NotifierAgent, mocker: MockerFixture
+    ) -> None:
+        flush_mock = mocker.patch.object(notifier, "flush_batch", AsyncMock())
+        stop_event = threading.Event()
+        call_count = 0
+
+        async def fake_sleep(_seconds: float) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                stop_event.set()
+
+        mocker.patch("asyncio.sleep", side_effect=fake_sleep)
+
+        await notifier.run_batch_loop(30, stop_event=stop_event)
+
+        assert flush_mock.await_count == 2
 
 
 class TestNotifierAgentCallbackHandling:
