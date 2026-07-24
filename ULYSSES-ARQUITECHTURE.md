@@ -477,8 +477,22 @@ Demo script generator from job description. Zip sent as Telegram document.
 
 ### Phase 4 — CLI Polish (Week 4)
 Full Typer CLI. `ulysses score`, `ulysses draft`, `ulysses build`, `ulysses status`.
+Native macOS menu bar app with LaunchAgent auto-start.
 
-### Phase 5 — Intelligence Upgrades (Ongoing)
+### Phase 5 — Built-in Chat REPL
+`ulysses chat` opens an interactive terminal session: paste a job listing
+copied straight from the Upwork website (no email required), and it's
+extracted into a structured job via LLM (since real notification emails have
+a stable HTML structure to key off of, but a manual paste doesn't), scored,
+persisted to the same database scout-ingested jobs use, then drafted and
+prototyped exactly like `ulysses go`. Results print to the terminal and save
+to `./output/<job_id>/`; the loop continues for the next paste until you quit.
+This bypasses the LangGraph pipeline's Telegram-oriented interrupt/resume
+step entirely — the same way the real production Telegram flow already does
+after a button press — rather than building on that mechanism's unused,
+untested resume path.
+
+### Phase 6 — Intelligence Upgrades (Ongoing)
 - Fine-tune scoring weights based on your actual win rate
 - Add "what worked" feedback loop: when you get a contract, log which job score/category it was
 - A/B test proposal hooks over time

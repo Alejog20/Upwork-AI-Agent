@@ -21,6 +21,7 @@ from telegram.ext import Application
 from ulysses.agents.notifier import InstantAlertHook, NotifierAgent
 from ulysses.agents.proposal import ProposalAgent
 from ulysses.agents.prototype import PrototypeAgent, build_prototype_zip
+from ulysses.agents.scorer import score_job
 from ulysses.agents.scout import ScoutAgent
 from ulysses.config.profile import (
     Profile,
@@ -32,9 +33,10 @@ from ulysses.config.profile import (
 from ulysses.config.settings import Settings, get_settings
 from ulysses.graph.graph import build_graph
 from ulysses.models import GeneratedPrototype, JobPost, JobScore
-from ulysses.tools.db import JobStatus, UlyssesDB
+from ulysses.tools.db import Job, JobStatus, UlyssesDB
 from ulysses.tools.email_reader import EmailReader
 from ulysses.tools.launch_agent import install_launch_agent, uninstall_launch_agent
+from ulysses.tools.manual_job import ManualJobParseError, extract_job_from_text
 
 __all__ = ["app", "run_forever"]
 
@@ -409,6 +411,134 @@ async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
         console.print(Panel(prototype.readme_md, title="README.md"))
     finally:
         await db.dispose()
+
+
+_CHAT_QUIT_COMMANDS = {"quit", "exit"}
+_CHAT_END_SENTINEL = "END"
+
+
+@app.command()
+def chat() -> None:
+    """Interactive chat: paste job listings and get scored proposals + prototypes, one session."""
+    settings = get_settings()
+    profile = load_profile(settings.profile_path)
+    asyncio.run(_chat_async(settings, profile))
+
+
+async def _chat_async(settings: Settings, profile: Profile) -> None:
+    console.print("[bold green]Ulysses chat[/bold green] — paste a job listing below.")
+    console.print(
+        f"Type or paste the listing, then a line with just [cyan]{_CHAT_END_SENTINEL}[/cyan] "
+        "to submit it, or type [cyan]quit[/cyan]/[cyan]exit[/cyan] to leave.\n"
+    )
+
+    db = UlyssesDB(settings.db_path)
+    await db.init()
+    proposal_agent = ProposalAgent()
+    prototype_agent = PrototypeAgent()
+    try:
+        while True:
+            raw_text = _read_pasted_job_listing()
+            if raw_text is None:
+                console.print("[yellow]Goodbye.[/yellow]")
+                return
+            if not raw_text.strip():
+                console.print(
+                    "[yellow]Nothing pasted — try again, or type quit to leave.[/yellow]\n"
+                )
+                continue
+
+            try:
+                await _process_pasted_job(db, proposal_agent, prototype_agent, profile, raw_text)
+            except ManualJobParseError as exc:
+                console.print(f"[red]Couldn't read that listing:[/red] {exc}\n")
+            except Exception:
+                logger.exception("Failed to process a pasted job listing")
+                console.print(
+                    "[red]Something went wrong processing that listing — see the log for "
+                    "details. You can paste another one.[/red]\n"
+                )
+    finally:
+        await db.dispose()
+
+
+async def _process_pasted_job(
+    db: UlyssesDB,
+    proposal_agent: ProposalAgent,
+    prototype_agent: PrototypeAgent,
+    profile: Profile,
+    raw_text: str,
+) -> None:
+    with console.status("[bold cyan]Extracting job details...[/bold cyan]"):
+        job = await extract_job_from_text(raw_text)
+
+    score = score_job(job, profile)
+    await db.upsert_job(
+        Job(
+            id=job.id,
+            title=job.title,
+            description=job.description,
+            url=job.url,
+            score=score.total_score,
+            category=score.gig_category.value,
+            status=JobStatus.NEW,
+            posted_at=job.posted_at,
+            job_json=job.model_dump_json(),
+            score_json=score.model_dump_json(),
+        )
+    )
+    _print_score_summary(job, score)
+
+    with console.status("[bold cyan]Drafting proposal and building prototype...[/bold cyan]"):
+        proposal, prototype = await asyncio.gather(
+            proposal_agent.generate(job, score, profile),
+            prototype_agent.generate(job, score, profile),
+        )
+    await db.add_proposal_draft(job.id, proposal.full_text)
+    await _persist_prototype_files(db, job.id, prototype)
+
+    output_dir = _write_prototype_to_disk(prototype, job.id)
+    (output_dir / "proposal.txt").write_text(proposal.full_text, encoding="utf-8")
+
+    console.print(f"[green]Output written to {output_dir}[/green]")
+    console.print(Panel(proposal.full_text, title="Proposal"))
+    console.print(Panel(prototype.readme_md, title="README.md"))
+    console.print("\n[dim]Paste the next job listing, or type quit to leave.[/dim]\n")
+
+
+def _print_score_summary(job: JobPost, score: JobScore) -> None:
+    table = Table(title=f"Score — {job.title}")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="magenta")
+    table.add_row("Total", f"{score.total_score:.0f}/100")
+    table.add_row("Category", score.gig_category.value)
+    table.add_row("Recommendation", score.recommendation.value)
+    if score.red_flags:
+        table.add_row("Red flags", ", ".join(score.red_flags))
+    console.print(table)
+
+
+def _read_pasted_job_listing() -> str | None:
+    """Read one multi-line pasted job listing from stdin.
+
+    Reads lines until one that is exactly "END" after stripping whitespace,
+    returning everything read before it, joined with newlines. Typing
+    "quit"/"exit" (case-insensitive) as the very first line, or hitting EOF
+    (Ctrl-D) at any point, returns `None` instead -- the caller treats that
+    as "leave the chat".
+    """
+    lines: list[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            return None
+        stripped = line.strip()
+        if not lines and stripped.lower() in _CHAT_QUIT_COMMANDS:
+            return None
+        if stripped == _CHAT_END_SENTINEL:
+            return "\n".join(lines)
+        lines.append(line)
 
 
 @app.command()
