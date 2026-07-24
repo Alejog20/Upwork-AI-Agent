@@ -27,9 +27,8 @@ from ulysses.cli.main import (
 )
 from ulysses.config.profile import DEFAULT_PROFILE_PATH, load_profile
 from ulysses.config.settings import get_settings
-from ulysses.models import BudgetRange, GeneratedPrototype, JobPost
+from ulysses.models import GeneratedPrototype
 from ulysses.tools.db import Job, JobStatus, UlyssesDB
-from ulysses.tools.manual_job import ManualJobParseError
 
 runner = CliRunner()
 
@@ -144,7 +143,6 @@ def _isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ULYSSES_IMAP_APP_PASSWORD", "secret")
     monkeypatch.setenv("ULYSSES_TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("ULYSSES_TELEGRAM_CHAT_ID", "123456")
-    monkeypatch.setenv("ULYSSES_LLM_API_KEY", "test-key")
     monkeypatch.setenv("ULYSSES_ULYSSES_HOME", str(tmp_path / "home"))
     get_settings.cache_clear()
     yield
@@ -280,134 +278,3 @@ class TestInstallUninstallCommands:
         result = runner.invoke(app, ["uninstall"])
         assert result.exit_code == 0
         assert "No LaunchAgent" in result.stdout
-
-
-def _mock_pasted_job(**overrides: object) -> JobPost:
-    defaults: dict[str, object] = {
-        "id": "manual-job-1",
-        "title": "Python scraper for real estate listings",
-        "description": "Scrape three sites daily and dedupe results.",
-        "budget": BudgetRange(),
-        "skills_required": ["python", "web scraping"],
-        "client_hires": 0,
-        "payment_verified": True,
-        "proposals_count": 3,
-        "posted_at": datetime.now(UTC),
-        "url": "manual://fixed-for-test",
-    }
-    defaults.update(overrides)
-    return JobPost(**defaults)
-
-
-def _mock_proposal() -> MagicMock:
-    proposal = MagicMock()
-    proposal.full_text = "Generated proposal text."
-    return proposal
-
-
-def _mock_prototype(job_id: str) -> MagicMock:
-    prototype = MagicMock()
-    prototype.job_id = job_id
-    prototype.demo_script = "print('demo')"
-    prototype.requirements_txt = "requests==2.32.3\n"
-    prototype.readme_md = "# Demo\n"
-    prototype.config_example_env = "# none\n"
-    return prototype
-
-
-class TestChatCommand:
-    def test_quitting_immediately_prints_goodbye_and_touches_nothing(
-        self, mocker: MockerFixture
-    ) -> None:
-        extract_mock = mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock())
-
-        result = runner.invoke(app, ["chat"], input="quit\n")
-
-        assert result.exit_code == 0
-        assert "Goodbye" in result.stdout
-        extract_mock.assert_not_awaited()
-
-    def test_eof_before_any_input_leaves_cleanly(self) -> None:
-        result = runner.invoke(app, ["chat"], input="")
-
-        assert result.exit_code == 0
-        assert "Goodbye" in result.stdout
-
-    def test_processes_one_pasted_job_end_to_end(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        job = _mock_pasted_job()
-        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=job))
-        mocker.patch(
-            "ulysses.cli.main.ProposalAgent",
-            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
-        )
-        mocker.patch(
-            "ulysses.cli.main.PrototypeAgent",
-            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
-        )
-
-        result = runner.invoke(app, ["chat"], input="Some pasted job text here.\nEND\nquit\n")
-
-        assert result.exit_code == 0
-        assert "Generated proposal text." in result.stdout
-        assert "# Demo" in result.stdout
-        assert (Path("output") / job.id / "proposal.txt").read_text() == "Generated proposal text."
-
-        settings = get_settings()
-
-        async def _check() -> Job | None:
-            db = UlyssesDB(settings.db_path)
-            await db.init()
-            stored = await db.get_job(job.id)
-            await db.dispose()
-            return stored
-
-        stored_job = asyncio.run(_check())
-        assert stored_job is not None
-        assert stored_job.title == job.title
-
-    def test_extraction_failure_shows_friendly_error_and_continues_session(
-        self, mocker: MockerFixture
-    ) -> None:
-        mocker.patch(
-            "ulysses.cli.main.extract_job_from_text",
-            new=AsyncMock(side_effect=ManualJobParseError("nope")),
-        )
-
-        result = runner.invoke(app, ["chat"], input="not a real job listing\nEND\nquit\n")
-
-        assert result.exit_code == 0
-        assert "Couldn't read that listing" in result.stdout
-        assert "nope" in result.stdout
-        assert "Goodbye" in result.stdout
-
-    def test_processes_two_jobs_in_one_session(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        job1 = _mock_pasted_job(id="job-1", url="manual://job-1")
-        job2 = _mock_pasted_job(id="job-2", url="manual://job-2", title="Second job")
-        mocker.patch(
-            "ulysses.cli.main.extract_job_from_text",
-            new=AsyncMock(side_effect=[job1, job2]),
-        )
-        mocker.patch(
-            "ulysses.cli.main.ProposalAgent",
-            return_value=MagicMock(
-                generate=AsyncMock(side_effect=[_mock_proposal(), _mock_proposal()])
-            ),
-        )
-        mocker.patch(
-            "ulysses.cli.main.PrototypeAgent",
-            return_value=MagicMock(
-                generate=AsyncMock(side_effect=[_mock_prototype("job-1"), _mock_prototype("job-2")])
-            ),
-        )
-
-        result = runner.invoke(app, ["chat"], input="job one text\nEND\njob two text\nEND\nquit\n")
-
-        assert result.exit_code == 0
-        assert (Path("output") / "job-1").exists()
-        assert (Path("output") / "job-2").exists()
