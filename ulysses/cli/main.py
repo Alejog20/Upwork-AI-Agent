@@ -414,6 +414,7 @@ async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
 
 
 _CHAT_QUIT_COMMANDS = {"quit", "exit"}
+_CHAT_SUBMIT_SENTINEL = "SUBMITJOB"
 
 
 @app.command()
@@ -427,9 +428,10 @@ def chat() -> None:
 async def _chat_async(settings: Settings, profile: Profile) -> None:
     console.print("[bold green]Ulysses chat[/bold green] — paste a job listing below.")
     console.print(
-        "Paste the listing, then press [cyan]Ctrl+D[/cyan] to submit it. Press "
-        "[cyan]Ctrl+D[/cyan] again with nothing typed (or type [cyan]quit[/cyan]/"
-        "[cyan]exit[/cyan]) to leave.\n"
+        f"Paste the listing, then type [cyan]{_CHAT_SUBMIT_SENTINEL}[/cyan] and press Enter "
+        "to submit it (or press [cyan]Ctrl+D[/cyan], if your terminal doesn't intercept it). "
+        f"Type [cyan]quit[/cyan]/[cyan]exit[/cyan] (or press Ctrl+D with nothing typed) to "
+        "leave.\n"
     )
 
     db = UlyssesDB(settings.db_path)
@@ -521,16 +523,29 @@ def _print_score_summary(job: JobPost, score: JobScore) -> None:
 
 
 def _read_pasted_job_listing() -> str | None:
-    """Read one multi-line pasted job listing from stdin, submitted with Ctrl+D (EOF).
+    """Read one multi-line pasted job listing from stdin.
 
-    EOF is a terminal-level signal, not typed text, so it can never collide
-    with the pasted content the way a typed sentinel word could -- pasted
-    text commonly has no trailing newline, so a sentinel typed right after
-    it would silently concatenate onto the same line instead of becoming its
-    own line, and the submission would never fire. Typing "quit"/"exit"
-    (case-insensitive) as the very first line, or pressing Ctrl+D again with
-    nothing typed yet, returns `None` instead -- the caller treats that as
-    "leave the chat".
+    Submitted either by typing SUBMITJOB and pressing Enter, or by pressing
+    Ctrl+D (EOF) -- whichever the user's terminal actually delivers. Some
+    terminal apps (iTerm2, Warp, VS Code's integrated terminal, etc.)
+    intercept Ctrl+D for their own UI shortcuts (splitting panes, etc.)
+    before it ever reaches this process as a real EOF, so a typed fallback
+    is needed, not just EOF.
+
+    The typed sentinel is matched as a *suffix* of the line, not an exact
+    match, and made up (not a real English word), for a reason: pasted text
+    commonly has no trailing newline, so typing a sentinel immediately after
+    a paste with no separating Enter silently concatenates it onto the last
+    pasted line (e.g. "...last line of the jobSUBMITJOB") instead of putting
+    it on its own line. An exact-line check (as an earlier version of this
+    used, with "END") never matches text like that; a suffix check does,
+    regardless of whether the user happened to press Enter before typing it.
+    A made-up word average job-post prose won't ever end with (unlike
+    "end") keeps this from false-triggering on real content.
+
+    Typing "quit"/"exit" (case-insensitive) as the very first line, or
+    hitting EOF with nothing typed yet, returns `None` instead -- the caller
+    treats that as "leave the chat".
     """
     lines: list[str] = []
     while True:
@@ -538,9 +553,17 @@ def _read_pasted_job_listing() -> str | None:
             line = input()
         except EOFError:
             return "\n".join(lines) if lines else None
-        stripped = line.strip()
-        if not lines and stripped.lower() in _CHAT_QUIT_COMMANDS:
+
+        candidate = line.rstrip()
+        if not lines and candidate.strip().lower() in _CHAT_QUIT_COMMANDS:
             return None
+
+        if candidate.lower().endswith(_CHAT_SUBMIT_SENTINEL.lower()):
+            leftover = candidate[: -len(_CHAT_SUBMIT_SENTINEL)]
+            if leftover:
+                lines.append(leftover)
+            return "\n".join(lines)
+
         lines.append(line)
 
 

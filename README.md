@@ -110,14 +110,17 @@ whole pipeline, right in the terminal:
 uv run ulysses chat
 ```
 
-Paste the listing text, then press **Ctrl+D** to submit it — Ulysses scores
-it, drafts a proposal, and builds a demo, same as `go`, but for a job copied
-straight from the Upwork website. Press Ctrl+D again with nothing typed (or
-type `quit`) to leave, or paste another listing to keep going.
+Paste the listing text, then type `SUBMITJOB` and press Enter to submit it
+(or press **Ctrl+D**, if your terminal doesn't intercept it for something
+else — several GUI terminal apps do). Ulysses scores it, drafts a proposal,
+and builds a demo — same as `go`, but for a job copied straight from the
+Upwork website. Type `quit` (or press Ctrl+D with nothing typed) to leave,
+or paste another listing to keep going.
 
-(Ctrl+D, not a typed word, is what submits the paste — pasted text usually
-has no trailing newline, so a typed sentinel word can silently merge onto
-the last line instead of registering on its own.)
+`SUBMITJOB` is matched even if it ends up glued onto the end of your pasted
+text with no space (pasted text often has no trailing newline, so typing
+right after a paste can land on the same line) — it's a made-up word
+specifically so it won't ever collide with real job-posting text.
 
 List or manage jobs directly:
 

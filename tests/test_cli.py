@@ -384,9 +384,45 @@ class TestChatCommand:
         assert "nope" in result.stdout
         assert "Goodbye" in result.stdout
 
+    def test_processes_two_jobs_in_one_session_via_typed_sentinel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        # Unlike EOF, the typed SUBMITJOB sentinel is just more text in the
+        # same piped stream, so (unlike the EOF-only path) a multi-job
+        # session is exercisable end-to-end through a single runner.invoke().
+        monkeypatch.chdir(tmp_path)
+        job1 = _mock_pasted_job(id="job-1", url="manual://job-1")
+        job2 = _mock_pasted_job(id="job-2", url="manual://job-2", title="Second job")
+        mocker.patch(
+            "ulysses.cli.main.extract_job_from_text",
+            new=AsyncMock(side_effect=[job1, job2]),
+        )
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(
+                generate=AsyncMock(side_effect=[_mock_proposal(), _mock_proposal()])
+            ),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(
+                generate=AsyncMock(side_effect=[_mock_prototype("job-1"), _mock_prototype("job-2")])
+            ),
+        )
+
+        result = runner.invoke(
+            app,
+            ["chat"],
+            input="job one textSUBMITJOB\njob two textSUBMITJOB\nquit\n",
+        )
+
+        assert result.exit_code == 0
+        assert (Path("output") / "job-1").exists()
+        assert (Path("output") / "job-2").exists()
+
 
 class TestReadPastedJobListing:
-    """Unit tests for the Ctrl+D-driven paste reader against mocked `input()`.
+    """Unit tests for the paste reader (typed sentinel or Ctrl+D) against mocked `input()`.
 
     A real terminal's Ctrl+D is a "soft", per-read EOF -- the process can
     call `input()` again afterward and keep going, unlike a pipe/file EOF
@@ -395,6 +431,28 @@ class TestReadPastedJobListing:
     by mocking `input()` itself with a sequence of return values and
     `EOFError`s, not through a full `runner.invoke(...)` call.
     """
+
+    def test_sentinel_on_its_own_line_submits(self, mocker: MockerFixture) -> None:
+        mocker.patch("builtins.input", side_effect=["line one", "line two", "SUBMITJOB"])
+
+        assert _read_pasted_job_listing() == "line one\nline two"
+
+    def test_sentinel_merged_onto_last_pasted_line_still_submits(
+        self, mocker: MockerFixture
+    ) -> None:
+        # Simulates a real paste with no trailing newline, followed by typing
+        # the sentinel immediately after with no separating Enter -- the
+        # exact bug an exact-line-match sentinel ("END") missed.
+        mocker.patch(
+            "builtins.input", side_effect=["line one", "line two no trailing newlineSUBMITJOB"]
+        )
+
+        assert _read_pasted_job_listing() == "line one\nline two no trailing newline"
+
+    def test_sentinel_matching_is_case_insensitive(self, mocker: MockerFixture) -> None:
+        mocker.patch("builtins.input", side_effect=["some text", "submitjob"])
+
+        assert _read_pasted_job_listing() == "some text"
 
     def test_single_line_paste_submitted_by_eof(self, mocker: MockerFixture) -> None:
         mocker.patch("builtins.input", side_effect=["Some job text", EOFError()])
