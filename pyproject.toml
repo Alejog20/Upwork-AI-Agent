@@ -58,6 +58,7 @@ ignore = ["ANN401"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN001", "ANN201", "ANN202"]
+"scripts/*" = ["ANN001", "ANN201", "ANN202", "E501", "RUF005"]
 
 [tool.ruff.format]
 quote-style = "double"

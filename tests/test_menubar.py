@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 from pytest_mock import MockerFixture
 
 from ulysses.agents.scorer import score_job
-from ulysses.app.menubar import UlyssesMenuBarApp, format_instant_alert
+from ulysses.app.menubar import _ICON_FRAMES, UlyssesMenuBarApp, format_instant_alert
 from ulysses.config.profile import Profile
 from ulysses.models import JobPost
 
@@ -57,10 +57,12 @@ class _FakeApp:
         self._paused_event = threading.Event()
         self._stop_event = threading.Event()
         self._crashed_event = threading.Event()
+        self._status_item = MagicMock(title="Status: Running")
         self._jobs_today_item = MagicMock()
         self._proposals_item = MagicMock()
         self._prototypes_item = MagicMock()
-        self.title = "Ulysses 🟢"
+        self._frame_index = 0
+        self.icon = None
 
 
 class TestTogglePause:
@@ -72,7 +74,7 @@ class TestTogglePause:
 
         assert fake._paused_event.is_set()
         assert sender.title == "Resume"
-        assert fake.title == "Ulysses 🟡"
+        assert fake._status_item.title == "Status: Paused"
 
     def test_resuming_clears_event_and_updates_titles(self) -> None:
         fake = _FakeApp()
@@ -83,7 +85,7 @@ class TestTogglePause:
 
         assert not fake._paused_event.is_set()
         assert sender.title == "Pause"
-        assert fake.title == "Ulysses 🟢"
+        assert fake._status_item.title == "Status: Running"
 
 
 class TestQuitUlysses:
@@ -133,14 +135,33 @@ class TestPostInstantAlert:
         UlyssesMenuBarApp._post_instant_alert(_FakeApp(), fresh_job, score)  # must not raise
 
 
+class TestAnimateIcon:
+    def test_advances_frame_index_and_sets_icon(self) -> None:
+        fake = _FakeApp()
+
+        UlyssesMenuBarApp._animate_icon(fake, MagicMock())
+
+        assert fake._frame_index == 1
+        assert fake.icon == str(_ICON_FRAMES[1])
+
+    def test_wraps_around_after_last_frame(self) -> None:
+        fake = _FakeApp()
+        fake._frame_index = len(_ICON_FRAMES) - 1
+
+        UlyssesMenuBarApp._animate_icon(fake, MagicMock())
+
+        assert fake._frame_index == 0
+        assert fake.icon == str(_ICON_FRAMES[0])
+
+
 class TestRefresh:
-    def test_sets_red_title_when_crashed(self) -> None:
+    def test_sets_crashed_status_when_crashed(self) -> None:
         fake = _FakeApp()
         fake._crashed_event.set()
 
         UlyssesMenuBarApp.refresh(fake, MagicMock())
 
-        assert fake.title == "Ulysses 🔴"
+        assert fake._status_item.title == "Status: Crashed"
 
     def test_updates_stat_items_from_db(self, mocker: MockerFixture) -> None:
         fake = _FakeApp()
