@@ -144,6 +144,7 @@ def _isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ULYSSES_IMAP_APP_PASSWORD", "secret")
     monkeypatch.setenv("ULYSSES_TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("ULYSSES_TELEGRAM_CHAT_ID", "123456")
+    monkeypatch.setenv("ULYSSES_LLM_API_KEY", "test-key")
     monkeypatch.setenv("ULYSSES_ULYSSES_HOME", str(tmp_path / "home"))
     get_settings.cache_clear()
     yield

@@ -434,8 +434,6 @@ async def _chat_async(settings: Settings, profile: Profile) -> None:
 
     db = UlyssesDB(settings.db_path)
     await db.init()
-    proposal_agent = ProposalAgent()
-    prototype_agent = PrototypeAgent()
     try:
         while True:
             raw_text = _read_pasted_job_listing()
@@ -449,7 +447,7 @@ async def _chat_async(settings: Settings, profile: Profile) -> None:
                 continue
 
             try:
-                await _process_pasted_job(db, proposal_agent, prototype_agent, profile, raw_text)
+                await _process_pasted_job(db, profile, raw_text)
             except ManualJobParseError as exc:
                 console.print(f"[red]Couldn't read that listing:[/red] {exc}\n")
             except Exception:
@@ -462,13 +460,15 @@ async def _chat_async(settings: Settings, profile: Profile) -> None:
         await db.dispose()
 
 
-async def _process_pasted_job(
-    db: UlyssesDB,
-    proposal_agent: ProposalAgent,
-    prototype_agent: PrototypeAgent,
-    profile: Profile,
-    raw_text: str,
-) -> None:
+async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) -> None:
+    """Extract, score, draft, and prototype one pasted job listing.
+
+    `ProposalAgent`/`PrototypeAgent` are constructed here, not once for the
+    whole chat session, so quitting (or an extraction failure) never
+    requires LLM credentials to be configured at all -- constructing them
+    only wraps the already process-wide-cached `get_llm()` client, so there's
+    no real cost to doing it per job instead of once per session.
+    """
     with console.status("[bold cyan]Extracting job details...[/bold cyan]"):
         job = await extract_job_from_text(raw_text)
 
@@ -489,6 +489,8 @@ async def _process_pasted_job(
     )
     _print_score_summary(job, score)
 
+    proposal_agent = ProposalAgent()
+    prototype_agent = PrototypeAgent()
     with console.status("[bold cyan]Drafting proposal and building prototype...[/bold cyan]"):
         proposal, prototype = await asyncio.gather(
             proposal_agent.generate(job, score, profile),
