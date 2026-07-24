@@ -21,13 +21,14 @@ from ulysses.tools.llm import ainvoke_with_retry, get_llm
 
 __all__ = ["ManualJobParseError", "extract_job_from_text"]
 
-_MAX_INPUT_CHARS = 12_000
-_MAX_OUTPUT_TOKENS = 1000
+_MAX_INPUT_CHARS = 60_000
+_MAX_OUTPUT_TOKENS = 900
+_MAX_DESCRIPTION_CHARS = 2_000
 _MIN_TITLE_CHARS = 3
 _MIN_DESCRIPTION_CHARS = 20
 _MAX_POSTED_MINUTES_AGO = 60 * 24 * 365 * 5  # 5 years -- a sanity clamp, not a real limit
 
-_SYSTEM_PROMPT = """You extract structured data from a raw, manually copy-pasted Upwork job \
+_SYSTEM_PROMPT = f"""You extract structured data from a raw, manually copy-pasted Upwork job \
 listing. The text was pasted directly from the Upwork website by a freelancer, so it may \
 include extra page chrome (navigation text, "Apply Now" buttons, unrelated boilerplate) mixed \
 in with the actual listing -- ignore anything that isn't part of the job posting itself.
@@ -35,8 +36,10 @@ in with the actual listing -- ignore anything that isn't part of the job posting
 Extract only what is actually present in the text. Never invent a client rating, hire count, \
 budget, or posting time that isn't shown -- leave those fields null/default instead of guessing.
 
-For description, copy the full scope-of-work text as written, without summarizing, shortening, \
-or rephrasing it.
+For description, copy the scope-of-work text as written if it's under about \
+{_MAX_DESCRIPTION_CHARS} characters. If the actual posting is longer than that, summarize it \
+instead -- preserve every concrete requirement, deliverable, and constraint, just written more \
+concisely. Do not just cut it off mid-sentence.
 
 For posted_minutes_ago, convert whatever relative time phrase appears (e.g. "posted 3 hours \
 ago", "5 minutes ago", "2 days ago") into a plain integer number of minutes elapsed. If no \
@@ -58,8 +61,8 @@ class _ManualJobExtraction(BaseModel):
 
     title: str = Field(description="The job's title/headline, verbatim or near-verbatim.")
     description: str = Field(
-        description="The full job description/scope of work, verbatim as pasted -- do not "
-        "summarize or shorten it."
+        description=f"The job description/scope of work, verbatim if it's under about "
+        f"{_MAX_DESCRIPTION_CHARS} characters, summarized (not truncated) if longer."
     )
     budget_type: BudgetType = Field(
         default=BudgetType.UNKNOWN,
@@ -109,13 +112,18 @@ async def extract_job_from_text(raw_text: str, *, llm: BaseChatModel | None = No
 
     Args:
         raw_text: The raw text the user pasted (may include extra page chrome).
+            Truncated to `_MAX_INPUT_CHARS` before being sent to the LLM --
+            generous on purpose, since this is the only thing that decides
+            what the LLM ever sees.
         llm: Chat model override, primarily for tests. Defaults to `get_llm()`.
 
     Returns:
         A fully-populated `JobPost`. `id`/`url` are synthesized (a `manual://`
         placeholder, unless the LLM found a real URL in the text) and
         `posted_at` is computed from the extracted relative time (or "now"
-        if none was found).
+        if none was found). `description` is capped at `_MAX_DESCRIPTION_CHARS`
+        -- the LLM is asked to summarize (not truncate) longer postings, and a
+        word-boundary truncation backstops that in case it doesn't comply.
 
     Raises:
         ManualJobParseError: If `raw_text` is blank/too short, or if the
@@ -143,7 +151,7 @@ async def extract_job_from_text(raw_text: str, *, llm: BaseChatModel | None = No
     extraction: _ManualJobExtraction = await ainvoke_with_retry(structured_llm, prompt)
 
     title = extraction.title.strip()
-    description = extraction.description.strip()
+    description = _truncate_at_word_boundary(extraction.description.strip(), _MAX_DESCRIPTION_CHARS)
     if len(title) < _MIN_TITLE_CHARS or len(description) < _MIN_DESCRIPTION_CHARS:
         raise ManualJobParseError(
             "Couldn't find a job title/description in that text -- check what you pasted and "

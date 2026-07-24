@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ulysses.models import BudgetType
-from ulysses.tools.manual_job import ManualJobParseError, extract_job_from_text
+from ulysses.tools.manual_job import (
+    _MAX_DESCRIPTION_CHARS,
+    ManualJobParseError,
+    extract_job_from_text,
+)
 
 _SAMPLE_LISTING = """Python Web Scraper Needed for Real Estate Listings
 Posted 3 hours ago
@@ -122,3 +126,41 @@ class TestExtractJobFromText:
 
         with pytest.raises(ManualJobParseError):
             await extract_job_from_text(_SAMPLE_LISTING, llm=mock_llm)
+
+    async def test_description_within_limit_is_preserved_unchanged(
+        self, mock_llm: MagicMock
+    ) -> None:
+        short_description = "A reasonably detailed but short scope of work."
+        mock_llm.with_structured_output.return_value.ainvoke.return_value.description = (
+            short_description
+        )
+
+        job = await extract_job_from_text(_SAMPLE_LISTING, llm=mock_llm)
+
+        assert job.description == short_description
+
+    async def test_oversized_description_is_truncated_as_a_backstop(
+        self, mock_llm: MagicMock
+    ) -> None:
+        # Even if the LLM ignores the "summarize, don't truncate" instruction
+        # and echoes back something longer than the cap, this must not leak
+        # an unbounded description downstream.
+        overlong_description = "word " * (_MAX_DESCRIPTION_CHARS // 4)
+        mock_llm.with_structured_output.return_value.ainvoke.return_value.description = (
+            overlong_description
+        )
+
+        job = await extract_job_from_text(_SAMPLE_LISTING, llm=mock_llm)
+
+        assert len(job.description) <= _MAX_DESCRIPTION_CHARS
+
+    async def test_long_pasted_input_is_not_truncated_before_reaching_the_llm(
+        self, mock_llm: MagicMock
+    ) -> None:
+        long_paste = _SAMPLE_LISTING + ("filler text " * 3000)  # ~36,000 chars, well under 60k
+
+        await extract_job_from_text(long_paste, llm=mock_llm)
+
+        sent_prompt = mock_llm.with_structured_output.return_value.ainvoke.call_args.args[0]
+        user_message = sent_prompt[1]["content"]
+        assert user_message.count("filler text") == 3000
