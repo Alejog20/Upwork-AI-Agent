@@ -7,10 +7,12 @@ Telegram with one-tap actions to draft a proposal or build a demo prototype.
 See `ULYSSES-ARQUITECHTURE.md` for the full system design and `CLAUDE.md` for
 project development standards.
 
-Current status: **Phase 4** — all five agents are live, the CLI is complete
-(`start`, `status`, `draft`, `build`, `go`, `queue`, `archive`, `config`,
-`install`/`uninstall`), and there's a native macOS menu bar app with
-LaunchAgent auto-start. Phase 5 (analytics/win-rate tuning) is next.
+Current status: **Phase 5** — all five agents are live, the CLI is complete
+(`start`, `status`, `draft`, `build`, `go`, `chat`, `queue`, `archive`,
+`config`, `install`/`uninstall`), there's a native macOS menu bar app with
+LaunchAgent auto-start, and `ulysses chat` lets you paste a job listing
+straight from the Upwork website and run it through the whole pipeline
+without waiting on email. Phase 6 (analytics/win-rate tuning) is next.
 
 ## Requirements
 
@@ -100,6 +102,18 @@ uv run ulysses build https://www.upwork.com/jobs/~0112345678901234
 # Both at once, written to ./output/<job_id>/ (includes proposal.txt)
 uv run ulysses go https://www.upwork.com/jobs/~0112345678901234
 ```
+
+Haven't seen a job via email yet? Paste it in directly and run it through the
+whole pipeline, right in the terminal:
+
+```bash
+uv run ulysses chat
+```
+
+Paste the listing text, finish with a line containing just `END`, and Ulysses
+scores it, drafts a proposal, and builds a demo — same as `go`, but for a job
+copied straight from the Upwork website. Type `quit` to leave, or paste
+another listing to keep going.
 
 List or manage jobs directly:
 

@@ -27,6 +27,7 @@ class TestGetLlm:
         monkeypatch.setenv("ULYSSES_IMAP_APP_PASSWORD", "secret")
         monkeypatch.setenv("ULYSSES_TELEGRAM_BOT_TOKEN", "token")
         monkeypatch.setenv("ULYSSES_TELEGRAM_CHAT_ID", "123456")
+        monkeypatch.setenv("ULYSSES_LLM_API_KEY", "test-key")
         monkeypatch.setenv("ULYSSES_LLM_MODEL", "gpt-4o-mini")
         get_llm.cache_clear()
         try:
@@ -41,6 +42,7 @@ class TestGetLlm:
         monkeypatch.setenv("ULYSSES_IMAP_APP_PASSWORD", "secret")
         monkeypatch.setenv("ULYSSES_TELEGRAM_BOT_TOKEN", "token")
         monkeypatch.setenv("ULYSSES_TELEGRAM_CHAT_ID", "123456")
+        monkeypatch.setenv("ULYSSES_LLM_API_KEY", "test-key")
         get_llm.cache_clear()
         try:
             assert get_llm() is get_llm()

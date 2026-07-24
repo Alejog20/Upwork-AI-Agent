@@ -282,33 +282,44 @@ graph.add_interrupt("notifier")  # LangGraph interrupt point
 ## Python CLI Interface
 
 ```bash
-# Start the full monitoring loop
+# Start the full monitoring loop (scout -> scorer -> Telegram notifier)
 ulysses start
 
-# Score a specific job URL manually
-ulysses score https://www.upwork.com/jobs/~01234567890
-
-# Draft a proposal for a specific job
-ulysses draft https://www.upwork.com/jobs/~01234567890
-
-# Build a demo prototype for a specific job
-ulysses build https://www.upwork.com/jobs/~01234567890
-
-# Do both draft + build
-ulysses go https://www.upwork.com/jobs/~01234567890
-
-# Show job queue and stats
+# Show job counts and pipeline status
 ulysses status
 
-# Show recent jobs by score
-ulysses queue --min-score 70
+# Draft a proposal for a job already seen via email (looked up by its Upwork URL)
+ulysses draft https://www.upwork.com/jobs/~01234567890
 
-# Archive a job
+# Build a demo prototype for a job already seen, saved to ./output/<job_id>/
+ulysses build https://www.upwork.com/jobs/~01234567890
+
+# Do both draft + build in one call
+ulysses go https://www.upwork.com/jobs/~01234567890
+
+# Interactive chat: paste a job listing straight from the Upwork website (no
+# email needed) and run it through the whole pipeline, right in the terminal
+ulysses chat
+
+# List known jobs, optionally filtered by minimum score and/or category
+ulysses queue --min-score 70 --category tier1
+
+# Mark a job as archived
 ulysses archive <job_id>
 
-# Set your profile config (skills, repos, rate)
-ulysses config set --rate 25 --skills "python,fastapi,scraping,automation"
+# View your current profile.yaml
+ulysses config show
+
+# Update a single profile.yaml field by its dotted key
+ulysses config set freelancer.rate_usd_hr 25
+ulysses config set skills.primary "python,fastapi,scraping,automation"
+
+# Install/remove a macOS LaunchAgent so `ulysses start` runs automatically on login
+ulysses install
+ulysses uninstall
 ```
+
+See `README.md` for the full setup walkthrough and usage examples for each command.
 
 ---
 
@@ -477,8 +488,22 @@ Demo script generator from job description. Zip sent as Telegram document.
 
 ### Phase 4 — CLI Polish (Week 4)
 Full Typer CLI. `ulysses score`, `ulysses draft`, `ulysses build`, `ulysses status`.
+Native macOS menu bar app with LaunchAgent auto-start.
 
-### Phase 5 — Intelligence Upgrades (Ongoing)
+### Phase 5 — Built-in Chat REPL
+`ulysses chat` opens an interactive terminal session: paste a job listing
+copied straight from the Upwork website (no email required), and it's
+extracted into a structured job via LLM (since real notification emails have
+a stable HTML structure to key off of, but a manual paste doesn't), scored,
+persisted to the same database scout-ingested jobs use, then drafted and
+prototyped exactly like `ulysses go`. Results print to the terminal and save
+to `./output/<job_id>/`; the loop continues for the next paste until you quit.
+This bypasses the LangGraph pipeline's Telegram-oriented interrupt/resume
+step entirely — the same way the real production Telegram flow already does
+after a button press — rather than building on that mechanism's unused,
+untested resume path.
+
+### Phase 6 — Intelligence Upgrades (Ongoing)
 - Fine-tune scoring weights based on your actual win rate
 - Add "what worked" feedback loop: when you get a contract, log which job score/category it was
 - A/B test proposal hooks over time
