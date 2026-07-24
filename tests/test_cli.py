@@ -20,6 +20,7 @@ from telegram.error import InvalidToken, NetworkError, TimedOut
 from typer.testing import CliRunner
 
 from ulysses.cli.main import (
+    _read_pasted_job_listing,
     _shutdown_telegram,
     _start_telegram_with_retry,
     _write_prototype_to_disk,
