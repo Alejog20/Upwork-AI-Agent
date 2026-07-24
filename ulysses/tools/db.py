@@ -10,6 +10,7 @@ job was scored — can reconstruct them via `get_full_job`.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ __all__ = [
     "ProposalDraft",
     "PrototypeFile",
     "UlyssesDB",
+    "sync_read_menubar_stats",
 ]
 
 
@@ -263,3 +265,34 @@ def _add_missing_columns(sync_conn: Connection) -> None:
             sync_conn.execute(
                 text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column_type}')
             )
+
+
+def sync_read_menubar_stats(db_path: Path) -> dict[str, int]:
+    """Read menu-bar summary stats via a plain sync `sqlite3` connection.
+
+    Only for the rumps menu bar app's periodic UI refresh timer, which runs
+    on a different thread than the main asyncio event loop -- using the
+    async `UlyssesDB` API there would require cross-thread coroutine
+    scheduling for what's just a few small read-only COUNT queries.
+    "Jobs today" is computed in UTC, matching how the rest of Ulysses stores
+    timestamps.
+    """
+    if not db_path.exists():
+        return {"jobs_today": 0, "proposals_drafted": 0, "prototypes_built": 0}
+
+    with sqlite3.connect(db_path) as conn:
+        jobs_today = conn.execute(
+            "SELECT COUNT(*) FROM job WHERE date(seen_at) = date('now')"
+        ).fetchone()[0]
+        proposals_drafted = conn.execute(
+            "SELECT COUNT(DISTINCT job_id) FROM proposaldraft"
+        ).fetchone()[0]
+        prototypes_built = conn.execute(
+            "SELECT COUNT(DISTINCT job_id) FROM prototypefile"
+        ).fetchone()[0]
+
+    return {
+        "jobs_today": jobs_today,
+        "proposals_drafted": proposals_drafted,
+        "prototypes_built": prototypes_built,
+    }

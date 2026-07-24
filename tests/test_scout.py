@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -122,3 +123,37 @@ class TestRunForever:
             await scout.run_forever(poll_interval_seconds=1, on_scored_job=on_scored_job)
 
         on_scored_job.assert_not_awaited()
+
+    async def test_stop_event_ends_the_loop_immediately(
+        self, db: UlyssesDB, profile: Profile
+    ) -> None:
+        scout = ScoutAgent(email_reader=AsyncMock(), db=db, profile=profile)
+        stop_event = threading.Event()
+        stop_event.set()
+
+        # Should return without ever polling or sleeping -- no mocking needed.
+        await scout.run_forever(
+            poll_interval_seconds=1, on_scored_job=AsyncMock(), stop_event=stop_event
+        )
+
+    async def test_paused_event_skips_polling(
+        self, db: UlyssesDB, profile: Profile, mocker
+    ) -> None:
+        reader = _reader_returning(RawEmail("1", "subj", VALID_EMAIL_HTML, ""))
+        scout = ScoutAgent(email_reader=reader, db=db, profile=profile)
+        on_scored_job = AsyncMock()
+        paused_event = threading.Event()
+        paused_event.set()
+
+        async def stop_after_sleep(_seconds: float) -> None:
+            raise asyncio.CancelledError
+
+        mocker.patch("asyncio.sleep", side_effect=stop_after_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            await scout.run_forever(
+                poll_interval_seconds=1, on_scored_job=on_scored_job, paused_event=paused_event
+            )
+
+        on_scored_job.assert_not_awaited()
+        reader.fetch_new_upwork_emails.assert_not_awaited()

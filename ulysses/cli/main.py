@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import sys
+import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import typer
+import yaml
 from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
@@ -15,20 +18,29 @@ from rich.table import Table
 from telegram.error import InvalidToken, NetworkError, RetryAfter
 from telegram.ext import Application
 
-from ulysses.agents.notifier import NotifierAgent
+from ulysses.agents.notifier import InstantAlertHook, NotifierAgent
 from ulysses.agents.proposal import ProposalAgent
 from ulysses.agents.prototype import PrototypeAgent, build_prototype_zip
 from ulysses.agents.scout import ScoutAgent
-from ulysses.config.profile import Profile, load_profile
+from ulysses.config.profile import (
+    Profile,
+    ProfileKeyError,
+    load_profile,
+    save_profile,
+    set_profile_value,
+)
 from ulysses.config.settings import Settings, get_settings
 from ulysses.graph.graph import build_graph
 from ulysses.models import GeneratedPrototype, JobPost, JobScore
-from ulysses.tools.db import UlyssesDB
+from ulysses.tools.db import JobStatus, UlyssesDB
 from ulysses.tools.email_reader import EmailReader
+from ulysses.tools.launch_agent import install_launch_agent, uninstall_launch_agent
 
-__all__ = ["app"]
+__all__ = ["app", "run_forever"]
 
 app = typer.Typer(help="Ulysses — monitors, scores, and helps you respond to Upwork jobs.")
+config_app = typer.Typer(help="View or update your profile.yaml settings.")
+app.add_typer(config_app, name="config")
 console = Console()
 
 _TELEGRAM_HTTP_TIMEOUT_SECONDS = 20
@@ -131,7 +143,7 @@ def start() -> None:
     console.print("  Press Ctrl+C to stop.\n")
 
     try:
-        asyncio.run(_run_forever(settings, profile))
+        asyncio.run(run_forever(settings, profile))
     except KeyboardInterrupt:
         console.print("\n[yellow]Ulysses stopped.[/yellow]")
     except InvalidToken:
@@ -146,9 +158,26 @@ def start() -> None:
         raise typer.Exit(code=1) from None
 
 
-async def _run_forever(settings: Settings, profile: Profile) -> None:
+async def run_forever(
+    settings: Settings,
+    profile: Profile,
+    *,
+    stop_event: threading.Event | None = None,
+    paused_event: threading.Event | None = None,
+    on_instant_alert: InstantAlertHook | None = None,
+) -> None:
+    """Run the full agent loop (scout -> scorer -> notifier) until stopped.
+
+    This is the shared entry point for both `ulysses start` and the macOS
+    menu bar app (`ulysses.app.menubar`) -- they differ only in what they
+    pass for `stop_event`/`paused_event`/`on_instant_alert`. Plain CLI usage
+    leaves all three `None`, which preserves the original run-forever,
+    never-paused, Telegram-only behavior.
+    """
     db, scout, notifier = _build_dependencies(settings, profile)
     await db.init()
+    if on_instant_alert is not None:
+        notifier.set_instant_alert_hook(on_instant_alert)
 
     proposal_agent = ProposalAgent()
     prototype_agent = PrototypeAgent()
@@ -184,8 +213,13 @@ async def _run_forever(settings: Settings, profile: Profile) -> None:
     try:
         await _start_telegram_with_retry(telegram_app)
         await asyncio.gather(
-            scout.run_forever(settings.email_poll_interval_seconds, on_scored_job),
-            notifier.run_batch_loop(profile.alerts.batch_interval_minutes),
+            scout.run_forever(
+                settings.email_poll_interval_seconds,
+                on_scored_job,
+                stop_event=stop_event,
+                paused_event=paused_event,
+            ),
+            notifier.run_batch_loop(profile.alerts.batch_interval_minutes, stop_event=stop_event),
         )
     finally:
         await _shutdown_telegram(telegram_app)
@@ -375,3 +409,108 @@ async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
         console.print(Panel(prototype.readme_md, title="README.md"))
     finally:
         await db.dispose()
+
+
+@app.command()
+def queue(
+    min_score: float = typer.Option(
+        0.0, "--min-score", help="Only show jobs at or above this score."
+    ),
+    category: str | None = typer.Option(
+        None, "--category", help="Only show jobs in this category (e.g. tier1)."
+    ),
+) -> None:
+    """List known jobs, optionally filtered by minimum score and/or category."""
+    settings = get_settings()
+    asyncio.run(_queue_async(settings, min_score, category))
+
+
+async def _queue_async(settings: Settings, min_score: float, category: str | None) -> None:
+    db = UlyssesDB(settings.db_path)
+    await db.init()
+    try:
+        jobs = await db.list_jobs(min_score=min_score, category=category)
+    finally:
+        await db.dispose()
+
+    if not jobs:
+        console.print("[yellow]No jobs match those filters.[/yellow]")
+        return
+
+    table = Table(title="Ulysses Job Queue")
+    table.add_column("Score", justify="right", style="magenta")
+    table.add_column("Category", style="cyan")
+    table.add_column("Status", style="green")
+    table.add_column("Title")
+    table.add_column("URL", overflow="fold")
+    for job in jobs:
+        table.add_row(f"{job.score:.0f}", job.category, job.status.value, job.title, job.url)
+
+    console.print(table)
+
+
+@app.command()
+def archive(job_id: str) -> None:
+    """Mark a job as archived."""
+    settings = get_settings()
+    asyncio.run(_archive_async(settings, job_id))
+
+
+async def _archive_async(settings: Settings, job_id: str) -> None:
+    db = UlyssesDB(settings.db_path)
+    await db.init()
+    try:
+        job = await db.get_job(job_id)
+        if job is None:
+            console.print(f"[red]No job found with id:[/red] {job_id}")
+            raise typer.Exit(code=1)
+        await db.update_status(job_id, JobStatus.ARCHIVED)
+        console.print(f"[green]Archived:[/green] {job.title}")
+    finally:
+        await db.dispose()
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Print the current profile.yaml contents."""
+    settings = get_settings()
+    profile = load_profile(settings.profile_path)
+    dumped = yaml.safe_dump(profile.model_dump(mode="json"), sort_keys=False, allow_unicode=True)
+    console.print(Panel(dumped, title=str(settings.profile_path)))
+
+
+@config_app.command("set")
+def config_set(key: str, value: str) -> None:
+    """Set a single profile.yaml field, e.g. `ulysses config set freelancer.rate_usd_hr 30`."""
+    settings = get_settings()
+    profile = load_profile(settings.profile_path)
+    try:
+        updated = set_profile_value(profile, key, value)
+    except ProfileKeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    save_profile(updated, settings.profile_path)
+    console.print(f"[green]Set[/green] {key} = {value}")
+
+
+@app.command()
+def install() -> None:
+    """Install a macOS LaunchAgent so `ulysses start` runs automatically on login."""
+    settings = get_settings()
+    try:
+        path = install_launch_agent(Path.cwd(), settings.log_dir)
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        console.print(f"[red]Failed to install LaunchAgent:[/red] {exc}")
+        raise typer.Exit(code=1) from None
+    console.print(f"[green]Installed and started LaunchAgent:[/green] {path}")
+    console.print("Ulysses will now start automatically on login.")
+
+
+@app.command()
+def uninstall() -> None:
+    """Remove the macOS LaunchAgent installed by `ulysses install`."""
+    removed = uninstall_launch_agent()
+    if removed:
+        console.print("[green]LaunchAgent removed.[/green] Ulysses will no longer auto-start.")
+    else:
+        console.print("[yellow]No LaunchAgent was installed.[/yellow]")
