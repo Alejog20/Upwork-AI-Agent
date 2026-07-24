@@ -20,6 +20,7 @@ from telegram.error import InvalidToken, NetworkError, TimedOut
 from typer.testing import CliRunner
 
 from ulysses.cli.main import (
+    _read_pasted_job_listing,
     _shutdown_telegram,
     _start_telegram_with_retry,
     _write_prototype_to_disk,
@@ -348,7 +349,7 @@ class TestChatCommand:
             return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
         )
 
-        result = runner.invoke(app, ["chat"], input="Some pasted job text here.\nEND\nquit\n")
+        result = runner.invoke(app, ["chat"], input="Some pasted job text here.\n")
 
         assert result.exit_code == 0
         assert "Generated proposal text." in result.stdout
@@ -376,38 +377,55 @@ class TestChatCommand:
             new=AsyncMock(side_effect=ManualJobParseError("nope")),
         )
 
-        result = runner.invoke(app, ["chat"], input="not a real job listing\nEND\nquit\n")
+        result = runner.invoke(app, ["chat"], input="not a real job listing\n")
 
         assert result.exit_code == 0
         assert "Couldn't read that listing" in result.stdout
         assert "nope" in result.stdout
         assert "Goodbye" in result.stdout
 
-    def test_processes_two_jobs_in_one_session(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        job1 = _mock_pasted_job(id="job-1", url="manual://job-1")
-        job2 = _mock_pasted_job(id="job-2", url="manual://job-2", title="Second job")
-        mocker.patch(
-            "ulysses.cli.main.extract_job_from_text",
-            new=AsyncMock(side_effect=[job1, job2]),
-        )
-        mocker.patch(
-            "ulysses.cli.main.ProposalAgent",
-            return_value=MagicMock(
-                generate=AsyncMock(side_effect=[_mock_proposal(), _mock_proposal()])
-            ),
-        )
-        mocker.patch(
-            "ulysses.cli.main.PrototypeAgent",
-            return_value=MagicMock(
-                generate=AsyncMock(side_effect=[_mock_prototype("job-1"), _mock_prototype("job-2")])
-            ),
+
+class TestReadPastedJobListing:
+    """Unit tests for the Ctrl+D-driven paste reader against mocked `input()`.
+
+    A real terminal's Ctrl+D is a "soft", per-read EOF -- the process can
+    call `input()` again afterward and keep going, unlike a pipe/file EOF
+    (which is permanent). `CliRunner`'s piped `input=` behaves like the
+    latter, so a multi-job chat session can only be exercised at this level,
+    by mocking `input()` itself with a sequence of return values and
+    `EOFError`s, not through a full `runner.invoke(...)` call.
+    """
+
+    def test_single_line_paste_submitted_by_eof(self, mocker: MockerFixture) -> None:
+        mocker.patch("builtins.input", side_effect=["Some job text", EOFError()])
+
+        assert _read_pasted_job_listing() == "Some job text"
+
+    def test_multi_line_paste_submitted_by_eof(self, mocker: MockerFixture) -> None:
+        mocker.patch("builtins.input", side_effect=["line one", "line two", EOFError()])
+
+        assert _read_pasted_job_listing() == "line one\nline two"
+
+    def test_immediate_eof_with_nothing_typed_returns_none(self, mocker: MockerFixture) -> None:
+        mocker.patch("builtins.input", side_effect=EOFError())
+
+        assert _read_pasted_job_listing() is None
+
+    def test_quit_as_first_line_returns_none(self, mocker: MockerFixture) -> None:
+        mocker.patch("builtins.input", side_effect=["quit"])
+
+        assert _read_pasted_job_listing() is None
+
+    def test_exit_as_first_line_is_case_insensitive(self, mocker: MockerFixture) -> None:
+        mocker.patch("builtins.input", side_effect=["EXIT"])
+
+        assert _read_pasted_job_listing() is None
+
+    def test_two_separate_calls_each_get_their_own_paste(self, mocker: MockerFixture) -> None:
+        input_mock = mocker.patch(
+            "builtins.input", side_effect=["job one text", EOFError(), "job two text", EOFError()]
         )
 
-        result = runner.invoke(app, ["chat"], input="job one text\nEND\njob two text\nEND\nquit\n")
-
-        assert result.exit_code == 0
-        assert (Path("output") / "job-1").exists()
-        assert (Path("output") / "job-2").exists()
+        assert _read_pasted_job_listing() == "job one text"
+        assert _read_pasted_job_listing() == "job two text"
+        assert input_mock.call_count == 4

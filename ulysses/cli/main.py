@@ -414,7 +414,6 @@ async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
 
 
 _CHAT_QUIT_COMMANDS = {"quit", "exit"}
-_CHAT_END_SENTINEL = "END"
 
 
 @app.command()
@@ -428,8 +427,9 @@ def chat() -> None:
 async def _chat_async(settings: Settings, profile: Profile) -> None:
     console.print("[bold green]Ulysses chat[/bold green] — paste a job listing below.")
     console.print(
-        f"Type or paste the listing, then a line with just [cyan]{_CHAT_END_SENTINEL}[/cyan] "
-        "to submit it, or type [cyan]quit[/cyan]/[cyan]exit[/cyan] to leave.\n"
+        "Paste the listing, then press [cyan]Ctrl+D[/cyan] to submit it. Press "
+        "[cyan]Ctrl+D[/cyan] again with nothing typed (or type [cyan]quit[/cyan]/"
+        "[cyan]exit[/cyan]) to leave.\n"
     )
 
     db = UlyssesDB(settings.db_path)
@@ -521,25 +521,26 @@ def _print_score_summary(job: JobPost, score: JobScore) -> None:
 
 
 def _read_pasted_job_listing() -> str | None:
-    """Read one multi-line pasted job listing from stdin.
+    """Read one multi-line pasted job listing from stdin, submitted with Ctrl+D (EOF).
 
-    Reads lines until one that is exactly "END" after stripping whitespace,
-    returning everything read before it, joined with newlines. Typing
-    "quit"/"exit" (case-insensitive) as the very first line, or hitting EOF
-    (Ctrl-D) at any point, returns `None` instead -- the caller treats that
-    as "leave the chat".
+    EOF is a terminal-level signal, not typed text, so it can never collide
+    with the pasted content the way a typed sentinel word could -- pasted
+    text commonly has no trailing newline, so a sentinel typed right after
+    it would silently concatenate onto the same line instead of becoming its
+    own line, and the submission would never fire. Typing "quit"/"exit"
+    (case-insensitive) as the very first line, or pressing Ctrl+D again with
+    nothing typed yet, returns `None` instead -- the caller treats that as
+    "leave the chat".
     """
     lines: list[str] = []
     while True:
         try:
             line = input()
         except EOFError:
-            return None
+            return "\n".join(lines) if lines else None
         stripped = line.strip()
         if not lines and stripped.lower() in _CHAT_QUIT_COMMANDS:
             return None
-        if stripped == _CHAT_END_SENTINEL:
-            return "\n".join(lines)
         lines.append(line)
 
 
