@@ -16,13 +16,7 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
-import pytest
 from pytest_mock import MockerFixture
-
-# `rumps` (and its pyobjc dependencies) only installs on macOS -- see the
-# `sys_platform == 'darwin'` marker in pyproject.toml. Skip this whole module
-# rather than crash on import when running on CI's Linux runner.
-pytest.importorskip("rumps")
 
 from ulysses.agents.scorer import score_job
 from ulysses.app.menubar import _ICON_FRAMES, UlyssesMenuBarApp, format_instant_alert
