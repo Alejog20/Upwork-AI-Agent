@@ -282,33 +282,44 @@ graph.add_interrupt("notifier")  # LangGraph interrupt point
 ## Python CLI Interface
 
 ```bash
-# Start the full monitoring loop
+# Start the full monitoring loop (scout -> scorer -> Telegram notifier)
 ulysses start
 
-# Score a specific job URL manually
-ulysses score https://www.upwork.com/jobs/~01234567890
-
-# Draft a proposal for a specific job
-ulysses draft https://www.upwork.com/jobs/~01234567890
-
-# Build a demo prototype for a specific job
-ulysses build https://www.upwork.com/jobs/~01234567890
-
-# Do both draft + build
-ulysses go https://www.upwork.com/jobs/~01234567890
-
-# Show job queue and stats
+# Show job counts and pipeline status
 ulysses status
 
-# Show recent jobs by score
-ulysses queue --min-score 70
+# Draft a proposal for a job already seen via email (looked up by its Upwork URL)
+ulysses draft https://www.upwork.com/jobs/~01234567890
 
-# Archive a job
+# Build a demo prototype for a job already seen, saved to ./output/<job_id>/
+ulysses build https://www.upwork.com/jobs/~01234567890
+
+# Do both draft + build in one call
+ulysses go https://www.upwork.com/jobs/~01234567890
+
+# Interactive chat: paste a job listing straight from the Upwork website (no
+# email needed) and run it through the whole pipeline, right in the terminal
+ulysses chat
+
+# List known jobs, optionally filtered by minimum score and/or category
+ulysses queue --min-score 70 --category tier1
+
+# Mark a job as archived
 ulysses archive <job_id>
 
-# Set your profile config (skills, repos, rate)
-ulysses config set --rate 25 --skills "python,fastapi,scraping,automation"
+# View your current profile.yaml
+ulysses config show
+
+# Update a single profile.yaml field by its dotted key
+ulysses config set freelancer.rate_usd_hr 25
+ulysses config set skills.primary "python,fastapi,scraping,automation"
+
+# Install/remove a macOS LaunchAgent so `ulysses start` runs automatically on login
+ulysses install
+ulysses uninstall
 ```
+
+See `README.md` for the full setup walkthrough and usage examples for each command.
 
 ---
 
