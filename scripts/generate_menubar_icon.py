@@ -28,6 +28,7 @@ from _spline import catmull_rom_to_bezier
 SIZE = 512
 DISPLAY_SIZE = 44
 N_FRAMES = 24
+DISC_RADIUS_FRACTION = 250.5 / SIZE  # outer edge of the gold ring stroke
 DEST_DIR = Path(__file__).resolve().parent.parent / "ulysses" / "app" / "assets" / "icon_frames"
 
 HEAD_POINTS = [
@@ -138,6 +139,17 @@ def build_svg(highlight_angle_deg: float) -> str:
 </svg>'''
 
 
+def _circular_alpha_mask(size: int, radius_fraction: float, supersample: int = 4):
+    from PIL import Image, ImageDraw
+
+    big = size * supersample
+    mask = Image.new("L", (big, big), 0)
+    r = big * radius_fraction
+    cx = cy = big / 2
+    ImageDraw.Draw(mask).ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+    return mask.resize((size, size), Image.LANCZOS)
+
+
 def main() -> None:
     from PIL import Image
 
@@ -155,13 +167,17 @@ def main() -> None:
                 capture_output=True,
             )
 
+        # qlmanage flattens the SVG's transparency onto an opaque white
+        # background when rasterizing, so the alpha channel it produces is
+        # useless -- replace it with our own circular mask matching the
+        # disc's known geometry instead of trusting qlmanage's alpha.
+        mask = _circular_alpha_mask(256, DISC_RADIUS_FRACTION)
+
         for i in range(N_FRAMES):
             rendered = tmp_path / f"frame_{i:02d}.svg.png"
-            img = (
-                Image.open(rendered)
-                .convert("RGBA")
-                .resize((DISPLAY_SIZE, DISPLAY_SIZE), Image.LANCZOS)
-            )
+            img = Image.open(rendered).convert("RGBA")
+            img.putalpha(mask)
+            img = img.resize((DISPLAY_SIZE, DISPLAY_SIZE), Image.LANCZOS)
             img.save(DEST_DIR / f"frame_{i:02d}.png", optimize=True)
 
     print(f"wrote {N_FRAMES} frames ({DISPLAY_SIZE}x{DISPLAY_SIZE}) to {DEST_DIR}")
