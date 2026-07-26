@@ -20,7 +20,7 @@ from telegram.error import InvalidToken, NetworkError, TimedOut
 from typer.testing import CliRunner
 
 from ulysses.cli.main import (
-    _read_pasted_job_listing,
+    _read_pasted_job_listings,
     _shutdown_telegram,
     _start_telegram_with_retry,
     _write_prototype_to_disk,
@@ -420,9 +420,47 @@ class TestChatCommand:
         assert (Path("output") / "job-1").exists()
         assert (Path("output") / "job-2").exists()
 
+    def test_processes_two_jobs_from_one_paste_via_next_job_sentinel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        # Both listings are queued with NEXTJOB in a single paste, then
+        # submitted together with one SUBMITJOB -- the batch path, as
+        # opposed to the sequential-SUBMITJOB path exercised above.
+        monkeypatch.chdir(tmp_path)
+        job1 = _mock_pasted_job(id="job-1", url="manual://job-1")
+        job2 = _mock_pasted_job(id="job-2", url="manual://job-2", title="Second job")
+        mocker.patch(
+            "ulysses.cli.main.extract_job_from_text",
+            new=AsyncMock(side_effect=[job1, job2]),
+        )
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(
+                generate=AsyncMock(side_effect=[_mock_proposal(), _mock_proposal()])
+            ),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(
+                generate=AsyncMock(side_effect=[_mock_prototype("job-1"), _mock_prototype("job-2")])
+            ),
+        )
 
-class TestReadPastedJobListing:
-    """Unit tests for the paste reader (typed sentinel or Ctrl+D) against mocked `input()`.
+        result = runner.invoke(
+            app,
+            ["chat"],
+            input="job one textNEXTJOB\njob two textSUBMITJOB\nquit\n",
+        )
+
+        assert result.exit_code == 0
+        assert "Processing job 1 of 2" in result.stdout
+        assert "Processing job 2 of 2" in result.stdout
+        assert (Path("output") / "job-1").exists()
+        assert (Path("output") / "job-2").exists()
+
+
+class TestReadPastedJobListings:
+    """Unit tests for the paste reader (typed sentinels or Ctrl+D) against mocked `input()`.
 
     A real terminal's Ctrl+D is a "soft", per-read EOF -- the process can
     call `input()` again afterward and keep going, unlike a pipe/file EOF
@@ -435,7 +473,7 @@ class TestReadPastedJobListing:
     def test_sentinel_on_its_own_line_submits(self, mocker: MockerFixture) -> None:
         mocker.patch("builtins.input", side_effect=["line one", "line two", "SUBMITJOB"])
 
-        assert _read_pasted_job_listing() == "line one\nline two"
+        assert _read_pasted_job_listings() == ["line one\nline two"]
 
     def test_sentinel_merged_onto_last_pasted_line_still_submits(
         self, mocker: MockerFixture
@@ -447,43 +485,103 @@ class TestReadPastedJobListing:
             "builtins.input", side_effect=["line one", "line two no trailing newlineSUBMITJOB"]
         )
 
-        assert _read_pasted_job_listing() == "line one\nline two no trailing newline"
+        assert _read_pasted_job_listings() == ["line one\nline two no trailing newline"]
 
     def test_sentinel_matching_is_case_insensitive(self, mocker: MockerFixture) -> None:
         mocker.patch("builtins.input", side_effect=["some text", "submitjob"])
 
-        assert _read_pasted_job_listing() == "some text"
+        assert _read_pasted_job_listings() == ["some text"]
 
     def test_single_line_paste_submitted_by_eof(self, mocker: MockerFixture) -> None:
         mocker.patch("builtins.input", side_effect=["Some job text", EOFError()])
 
-        assert _read_pasted_job_listing() == "Some job text"
+        assert _read_pasted_job_listings() == ["Some job text"]
 
     def test_multi_line_paste_submitted_by_eof(self, mocker: MockerFixture) -> None:
         mocker.patch("builtins.input", side_effect=["line one", "line two", EOFError()])
 
-        assert _read_pasted_job_listing() == "line one\nline two"
+        assert _read_pasted_job_listings() == ["line one\nline two"]
 
     def test_immediate_eof_with_nothing_typed_returns_none(self, mocker: MockerFixture) -> None:
         mocker.patch("builtins.input", side_effect=EOFError())
 
-        assert _read_pasted_job_listing() is None
+        assert _read_pasted_job_listings() is None
 
     def test_quit_as_first_line_returns_none(self, mocker: MockerFixture) -> None:
         mocker.patch("builtins.input", side_effect=["quit"])
 
-        assert _read_pasted_job_listing() is None
+        assert _read_pasted_job_listings() is None
 
     def test_exit_as_first_line_is_case_insensitive(self, mocker: MockerFixture) -> None:
         mocker.patch("builtins.input", side_effect=["EXIT"])
 
-        assert _read_pasted_job_listing() is None
+        assert _read_pasted_job_listings() is None
 
     def test_two_separate_calls_each_get_their_own_paste(self, mocker: MockerFixture) -> None:
         input_mock = mocker.patch(
             "builtins.input", side_effect=["job one text", EOFError(), "job two text", EOFError()]
         )
 
-        assert _read_pasted_job_listing() == "job one text"
-        assert _read_pasted_job_listing() == "job two text"
+        assert _read_pasted_job_listings() == ["job one text"]
+        assert _read_pasted_job_listings() == ["job two text"]
         assert input_mock.call_count == 4
+
+    def test_next_job_sentinel_queues_multiple_listings_in_one_batch(
+        self, mocker: MockerFixture
+    ) -> None:
+        mocker.patch(
+            "builtins.input",
+            side_effect=["job one text", "NEXTJOB", "job two text", "SUBMITJOB"],
+        )
+
+        assert _read_pasted_job_listings() == ["job one text", "job two text"]
+
+    def test_next_job_sentinel_merged_onto_last_pasted_line(self, mocker: MockerFixture) -> None:
+        mocker.patch(
+            "builtins.input",
+            side_effect=["job one textNEXTJOB", "job two text", EOFError()],
+        )
+
+        assert _read_pasted_job_listings() == ["job one text", "job two text"]
+
+    def test_three_listings_via_two_next_job_sentinels(self, mocker: MockerFixture) -> None:
+        mocker.patch(
+            "builtins.input",
+            side_effect=[
+                "job one",
+                "NEXTJOB",
+                "job two",
+                "nextjob",
+                "job three",
+                "SUBMITJOB",
+            ],
+        )
+
+        assert _read_pasted_job_listings() == ["job one", "job two", "job three"]
+
+    def test_empty_chunk_between_next_job_sentinels_is_dropped(self, mocker: MockerFixture) -> None:
+        mocker.patch(
+            "builtins.input",
+            side_effect=["job one", "NEXTJOB", "NEXTJOB", "job two", "SUBMITJOB"],
+        )
+
+        assert _read_pasted_job_listings() == ["job one", "job two"]
+
+    def test_submit_with_nothing_pasted_returns_empty_list_not_none(
+        self, mocker: MockerFixture
+    ) -> None:
+        mocker.patch("builtins.input", side_effect=["SUBMITJOB"])
+
+        assert _read_pasted_job_listings() == []
+
+    def test_quit_after_a_next_job_flush_is_treated_as_pasted_text(
+        self, mocker: MockerFixture
+    ) -> None:
+        # Once content has been queued via NEXTJOB, "quit" is no longer a
+        # special leave-the-chat command -- it would be ambiguous.
+        mocker.patch(
+            "builtins.input",
+            side_effect=["job one", "NEXTJOB", "quit", "SUBMITJOB"],
+        )
+
+        assert _read_pasted_job_listings() == ["job one", "quit"]

@@ -415,6 +415,7 @@ async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
 
 _CHAT_QUIT_COMMANDS = {"quit", "exit"}
 _CHAT_SUBMIT_SENTINEL = "SUBMITJOB"
+_CHAT_NEXT_JOB_SENTINEL = "NEXTJOB"
 
 
 @app.command()
@@ -428,8 +429,10 @@ def chat() -> None:
 async def _chat_async(settings: Settings, profile: Profile) -> None:
     console.print("[bold green]Ulysses chat[/bold green] — paste a job listing below.")
     console.print(
-        f"Paste the listing, then type [cyan]{_CHAT_SUBMIT_SENTINEL}[/cyan] and press Enter "
-        "to submit it (or press [cyan]Ctrl+D[/cyan], if your terminal doesn't intercept it). "
+        f"Paste a listing, then either type [cyan]{_CHAT_NEXT_JOB_SENTINEL}[/cyan] and press "
+        "Enter to queue another listing before submitting, or type "
+        f"[cyan]{_CHAT_SUBMIT_SENTINEL}[/cyan] and press Enter to submit the batch (or press "
+        "[cyan]Ctrl+D[/cyan], if your terminal doesn't intercept it). "
         f"Type [cyan]quit[/cyan]/[cyan]exit[/cyan] (or press Ctrl+D with nothing typed) to "
         "leave.\n"
     )
@@ -438,26 +441,31 @@ async def _chat_async(settings: Settings, profile: Profile) -> None:
     await db.init()
     try:
         while True:
-            raw_text = _read_pasted_job_listing()
-            if raw_text is None:
+            raw_texts = _read_pasted_job_listings()
+            if raw_texts is None:
                 console.print("[yellow]Goodbye.[/yellow]")
                 return
-            if not raw_text.strip():
+            if not raw_texts:
                 console.print(
                     "[yellow]Nothing pasted — try again, or type quit to leave.[/yellow]\n"
                 )
                 continue
 
-            try:
-                await _process_pasted_job(db, profile, raw_text)
-            except ManualJobParseError as exc:
-                console.print(f"[red]Couldn't read that listing:[/red] {exc}\n")
-            except Exception:
-                logger.exception("Failed to process a pasted job listing")
-                console.print(
-                    "[red]Something went wrong processing that listing — see the log for "
-                    "details. You can paste another one.[/red]\n"
-                )
+            total = len(raw_texts)
+            for index, raw_text in enumerate(raw_texts, start=1):
+                if total > 1:
+                    console.print(f"[dim]Processing job {index} of {total}...[/dim]")
+                try:
+                    await _process_pasted_job(db, profile, raw_text)
+                except ManualJobParseError as exc:
+                    console.print(f"[red]Couldn't read that listing:[/red] {exc}\n")
+                except Exception:
+                    logger.exception("Failed to process a pasted job listing")
+                    console.print(
+                        "[red]Something went wrong processing that listing — see the log for "
+                        "details. Continuing with the rest of the batch.[/red]\n"
+                    )
+            console.print("[dim]Paste the next job listing(s), or type quit to leave.[/dim]\n")
     finally:
         await db.dispose()
 
@@ -507,7 +515,6 @@ async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) ->
     console.print(f"[green]Output written to {output_dir}[/green]")
     console.print(Panel(proposal.full_text, title="Proposal"))
     console.print(Panel(prototype.readme_md, title="README.md"))
-    console.print("\n[dim]Paste the next job listing, or type quit to leave.[/dim]\n")
 
 
 def _print_score_summary(job: JobPost, score: JobScore) -> None:
@@ -522,47 +529,75 @@ def _print_score_summary(job: JobPost, score: JobScore) -> None:
     console.print(table)
 
 
-def _read_pasted_job_listing() -> str | None:
-    """Read one multi-line pasted job listing from stdin.
+def _read_pasted_job_listings() -> list[str] | None:
+    """Read one or more pasted job listings from stdin as a single batch.
 
-    Submitted either by typing SUBMITJOB and pressing Enter, or by pressing
-    Ctrl+D (EOF) -- whichever the user's terminal actually delivers. Some
-    terminal apps (iTerm2, Warp, VS Code's integrated terminal, etc.)
-    intercept Ctrl+D for their own UI shortcuts (splitting panes, etc.)
-    before it ever reaches this process as a real EOF, so a typed fallback
-    is needed, not just EOF.
+    Paste a listing, then either type NEXTJOB and press Enter to flush it and
+    start pasting the next one, or type SUBMITJOB and press Enter (or press
+    Ctrl+D, whichever the user's terminal actually delivers -- some terminal
+    apps intercept Ctrl+D for their own UI shortcuts before it ever reaches
+    this process as a real EOF) to flush the last listing and submit the
+    whole batch. Repeat NEXTJOB as many times as needed for more listings.
 
-    The typed sentinel is matched as a *suffix* of the line, not an exact
-    match, and made up (not a real English word), for a reason: pasted text
+    Both sentinels are matched as a *suffix* of the line, not an exact match,
+    and made up (not real English words), for the same reason: pasted text
     commonly has no trailing newline, so typing a sentinel immediately after
     a paste with no separating Enter silently concatenates it onto the last
-    pasted line (e.g. "...last line of the jobSUBMITJOB") instead of putting
-    it on its own line. An exact-line check (as an earlier version of this
-    used, with "END") never matches text like that; a suffix check does,
-    regardless of whether the user happened to press Enter before typing it.
-    A made-up word average job-post prose won't ever end with (unlike
-    "end") keeps this from false-triggering on real content.
+    pasted line (e.g. "...last line of the jobNEXTJOB") instead of putting it
+    on its own line. An exact-line check never matches text like that; a
+    suffix check does, regardless of whether the user happened to press
+    Enter before typing it.
 
-    Typing "quit"/"exit" (case-insensitive) as the very first line, or
-    hitting EOF with nothing typed yet, returns `None` instead -- the caller
-    treats that as "leave the chat".
+    Typing "quit"/"exit" (case-insensitive) as the very first thing typed in
+    the whole batch, or hitting EOF with nothing typed at all yet, returns
+    `None` instead -- the caller treats that as "leave the chat". Once any
+    listing has been flushed via NEXTJOB, "quit"/"exit" is no longer special
+    -- it would be ambiguous whether it means "abandon everything queued so
+    far" or is itself pasted content -- so it's just treated as text for the
+    next listing.
+
+    A flush (via NEXTJOB, SUBMITJOB, or EOF) that has no non-blank content
+    accumulated yet contributes no entry -- e.g. an accidental double
+    NEXTJOB, or SUBMITJOB with nothing pasted at all, don't produce empty
+    listings. The latter case returns an empty list (not `None`), distinct
+    from an explicit quit.
     """
+    chunks: list[str] = []
     lines: list[str] = []
+
+    def flush() -> None:
+        text = "\n".join(lines).strip()
+        if text:
+            chunks.append(text)
+        lines.clear()
+
     while True:
         try:
             line = input()
         except EOFError:
-            return "\n".join(lines) if lines else None
+            if not lines and not chunks:
+                return None
+            flush()
+            return chunks
 
         candidate = line.rstrip()
-        if not lines and candidate.strip().lower() in _CHAT_QUIT_COMMANDS:
+        if not lines and not chunks and candidate.strip().lower() in _CHAT_QUIT_COMMANDS:
             return None
 
-        if candidate.lower().endswith(_CHAT_SUBMIT_SENTINEL.lower()):
+        lowered = candidate.lower()
+        if lowered.endswith(_CHAT_SUBMIT_SENTINEL.lower()):
             leftover = candidate[: -len(_CHAT_SUBMIT_SENTINEL)]
             if leftover:
                 lines.append(leftover)
-            return "\n".join(lines)
+            flush()
+            return chunks
+
+        if lowered.endswith(_CHAT_NEXT_JOB_SENTINEL.lower()):
+            leftover = candidate[: -len(_CHAT_NEXT_JOB_SENTINEL)]
+            if leftover:
+                lines.append(leftover)
+            flush()
+            continue
 
         lines.append(line)
 

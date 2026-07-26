@@ -117,10 +117,17 @@ and builds a demo — same as `go`, but for a job copied straight from the
 Upwork website. Type `quit` (or press Ctrl+D with nothing typed) to leave,
 or paste another listing to keep going.
 
-`SUBMITJOB` is matched even if it ends up glued onto the end of your pasted
-text with no space (pasted text often has no trailing newline, so typing
-right after a paste can land on the same line) — it's a made-up word
-specifically so it won't ever collide with real job-posting text.
+Got several listings to process in one sitting? Paste one, type `NEXTJOB`
+and press Enter, paste the next, and repeat as many times as you like —
+then submit the whole batch at once with `SUBMITJOB`/Ctrl+D. Each listing
+is still extracted, scored, drafted, and prototyped independently (so one
+bad paste in the batch doesn't stop the rest), it just means you don't have
+to wait for each job's LLM calls to finish before pasting the next one in.
+
+`SUBMITJOB`/`NEXTJOB` are matched even if they end up glued onto the end of
+your pasted text with no space (pasted text often has no trailing newline,
+so typing right after a paste can land on the same line) — they're made-up
+words specifically so they won't ever collide with real job-posting text.
 
 List or manage jobs directly:
 
