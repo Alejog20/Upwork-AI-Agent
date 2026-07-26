@@ -298,7 +298,9 @@ ulysses build https://www.upwork.com/jobs/~01234567890
 ulysses go https://www.upwork.com/jobs/~01234567890
 
 # Interactive chat: paste a job listing straight from the Upwork website (no
-# email needed) and run it through the whole pipeline, right in the terminal
+# email needed) and run it through the whole pipeline, right in the terminal.
+# Paste several listings in one sitting by typing NEXTJOB between them before
+# submitting the whole batch with SUBMITJOB/Ctrl+D.
 ulysses chat
 
 # List known jobs, optionally filtered by minimum score and/or category
@@ -502,6 +504,15 @@ This bypasses the LangGraph pipeline's Telegram-oriented interrupt/resume
 step entirely — the same way the real production Telegram flow already does
 after a button press — rather than building on that mechanism's unused,
 untested resume path.
+
+Multiple listings can be queued into a single submission with the `NEXTJOB`
+sentinel (typed between pastes, the same suffix-matched idiom as
+`SUBMITJOB`), so a batch of jobs copied back-to-back from Upwork doesn't
+require waiting on each one's LLM calls before pasting the next. Each queued
+listing still goes through `extract_job_from_text` independently — one job
+in, one job out — so it gets its own extraction, scoring, drafting, and
+prototyping pass, and a bad paste partway through the batch doesn't stop the
+rest from being processed.
 
 ### Phase 6 — Intelligence Upgrades (Ongoing)
 - Fine-tune scoring weights based on your actual win rate
