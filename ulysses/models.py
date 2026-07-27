@@ -21,6 +21,7 @@ __all__ = [
     "GigCategory",
     "JobPost",
     "JobScore",
+    "Milestone",
     "Recommendation",
     "RepoMatch",
 ]
@@ -118,6 +119,14 @@ class JobScore(BaseModel):
     recommendation: Recommendation
 
 
+class Milestone(BaseModel):
+    """A single deliverable-based payment milestone within a fixed-price proposal."""
+
+    description: str
+    amount_usd: float
+    days: int
+
+
 class GeneratedProposal(BaseModel):
     """A generated Upwork proposal draft, ready to send or copy."""
 
@@ -125,11 +134,13 @@ class GeneratedProposal(BaseModel):
     category: str
     hook: str
     plan_bullets: list[str]
+    close: str
     proof_repo: str
     proof_repo_url: str
     timeline: str
     bid_usd: float
     full_text: str
+    milestones: list[Milestone] = Field(default_factory=list)
 
 
 class GeneratedPrototype(BaseModel):

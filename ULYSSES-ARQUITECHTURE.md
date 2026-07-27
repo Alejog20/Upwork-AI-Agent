@@ -146,48 +146,69 @@ RED_FLAGS = [
 ```
 --- PROPOSAL DRAFT ---
 
-[HOOK — 2 sentences, job-specific, pattern interrupt]
+[HOOK — 1-2 sentences, job-specific pattern interrupt, warm human language]
 
-[PROOF — links to matched GitHub repo + 1 sentence on what it does]
+[PROOF — natural-language mention of a matched GitHub repo + what it does]
 
 [PLAN — 3-bullet solution outline specific to their problem]
 
-[CLOSE — 1 confident sentence + CTA]
-
-Est. timeline: X days | Suggested bid: $XXX
+[CLOSE — 1 warm, confident sentence + soft CTA, woven into a sentence that also
+ states the timeline/rate]
 --- END DRAFT ---
 ```
+A separate, informational "Suggested milestones" block may follow (fixed-price jobs
+only, 1-4 milestones scaled to project length) — not part of the pasteable text above,
+since Upwork's actual milestone breakdown is a structured feature set up separately
+from the cover-letter proposal.
 
 **Proposal generation rules (baked into the system prompt):**
 - No greeting ("Hello", "Dear hiring manager")
 - No "I am interested in your project"
-- Tone: polite, warm, professional, and human — confident without being arrogant, brief without
-  being curt. Must not read as AI-generated (no "In today's...", "Leveraging my expertise...",
+- Tone: professional and straightforward first, warm and human second, persuasive
+  third — confident without being arrogant, persuasive without overselling. Must not
+  read as AI-generated (no "In today's...", "Leveraging my expertise...",
   "Furthermore/Moreover" transitions, or similar tells)
-- Always reference the specific pain point from the job description
+- Always reference the specific pain point from the job description, framed around
+  what it's costing the client (time, money, risk) rather than just the mechanism
+- Mirror 1-2 exact words/phrases from the client's own posting where natural
 - Always include at least one GitHub link
-- Address the "new to Upwork, not new to the field" objection naturally
-- Hard cap: 800 characters (enforced by truncating the LLM-generated hook/bullets before the
-  template is filled, so the timeline/bid line is never what gets cut)
+- Address the "new to Upwork, not new to the field" objection naturally, via
+  specificity rather than reassurance ("trust me" is a tell, not a fix)
+- Ends with one warm, confident sentence plus a soft call to action — never generic
+  boilerplate, and never fake urgency/scarcity ("only taking 2 clients this month")
+- Hard cap: 1200 characters for the hook/proof/plan/close (enforced by truncating the
+  LLM-generated content before the template is filled, so the pricing line is never
+  what gets cut); the milestone breakdown lives outside that cap
 - At most 1-2 emoji, only if genuinely fitting and professional
-- LLM calls are token-aware: the job description is truncated before it's sent, and the
-  completion itself is capped via `max_tokens`, to keep quality high without wasting tokens
+- LLM calls are token-aware: the job description is truncated before it's sent, and
+  the completion itself is capped via `max_tokens`, to keep quality high without
+  wasting tokens. A moderately high sampling temperature is used to avoid the flat,
+  repetitive phrasing that reads as AI-generated
 
 **Example output for a scraping job:**
 ```
-Your listings are being updated manually — that's hours of work that should take seconds. 🔍
+Your listings are being updated by hand every week — that's hours you could get back. 🔍
 
-Proof: Multiple_source_scraper (github.com/Alejog20/Multiple_source_scraper) — validation,
-dedup, and clean output already built in.
+I've built something close to this before: Multiple_source_scraper
+(github.com/Alejog20/Multiple_source_scraper) — validation, dedup, and clean output
+already built in, the same shape of problem you're describing.
 
-Plan:
+Here's how I'd tackle it:
 • Targeted scraper for the listing site with Playwright/BeautifulSoup
 • Validation and dedup with Pandas, saved to CSV/Sheets
 • Scheduled via cron or a lightweight server
 
-Timeline: 3 days | Bid: $120
+Happy to answer any questions before we start. I can have this done in 3 days for $120.
 ```
-(Under the 800-character cap.)
+(Under the 1200-character cap.)
+
+For a longer fixed-price job, a separate block follows the draft above:
+```
+Suggested milestones:
+1. Scraper built and tested against the live site — $150 (~2 days)
+2. Validation, dedup, and CSV/Sheets export wired in — $150 (~2 days)
+3. Scheduling and handoff — $100 (~1 day)
+```
 
 ---
 

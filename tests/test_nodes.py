@@ -80,6 +80,7 @@ class TestProposalNode:
             category="automation",
             hook="hook text",
             plan_bullets=["one", "two", "three"],
+            close="a closing line",
             proof_repo="repo",
             proof_repo_url="https://github.com/Alejog20/repo",
             timeline="3 days",

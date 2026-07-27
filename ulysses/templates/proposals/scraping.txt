@@ -1,10 +1,10 @@
 {hook}
 
-Proof: {proof_repo} ({proof_repo_url}) — validation, dedup, and clean output already built in.
+I've built something close to this before: {proof_repo} ({proof_repo_url}) — validation, dedup, and clean output already built in, the same shape of problem you're describing.
 
-Plan:
+Here's how I'd tackle it:
 • {plan_bullet_1}
 • {plan_bullet_2}
 • {plan_bullet_3}
 
-Timeline: {timeline} | Bid: ${bid}
+{close} {pricing_line}

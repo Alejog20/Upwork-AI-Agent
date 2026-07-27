@@ -303,6 +303,7 @@ def _mock_pasted_job(**overrides: object) -> JobPost:
 def _mock_proposal() -> MagicMock:
     proposal = MagicMock()
     proposal.full_text = "Generated proposal text."
+    proposal.milestones = []
     return proposal
 
 

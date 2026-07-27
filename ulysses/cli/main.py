@@ -19,7 +19,7 @@ from telegram.error import InvalidToken, NetworkError, RetryAfter
 from telegram.ext import Application
 
 from ulysses.agents.notifier import InstantAlertHook, NotifierAgent
-from ulysses.agents.proposal import ProposalAgent
+from ulysses.agents.proposal import ProposalAgent, render_milestones_block
 from ulysses.agents.prototype import PrototypeAgent, build_prototype_zip
 from ulysses.agents.scorer import score_job
 from ulysses.agents.scout import ScoutAgent
@@ -32,7 +32,7 @@ from ulysses.config.profile import (
 )
 from ulysses.config.settings import Settings, get_settings
 from ulysses.graph.graph import build_graph
-from ulysses.models import GeneratedPrototype, JobPost, JobScore
+from ulysses.models import GeneratedPrototype, JobPost, JobScore, Milestone
 from ulysses.tools.db import Job, JobStatus, UlyssesDB
 from ulysses.tools.email_reader import EmailReader
 from ulysses.tools.launch_agent import install_launch_agent, uninstall_launch_agent
@@ -326,8 +326,21 @@ async def _draft_async(settings: Settings, profile: Profile, url: str) -> None:
             f"[dim]Category: {generated.category} | Timeline: {generated.timeline} | "
             f"Bid: ${generated.bid_usd:.0f}[/dim]"
         )
+        _print_milestones(generated.milestones)
     finally:
         await db.dispose()
+
+
+def _print_milestones(milestones: list[Milestone]) -> None:
+    """Print the suggested milestone breakdown, if any, as a separate reference panel.
+
+    Not part of the pasteable proposal text -- Upwork's milestone breakdown is a
+    structured feature set up separately when creating the contract, so this is
+    informational, for Alejandro to copy over himself.
+    """
+    block = render_milestones_block(milestones)
+    if block:
+        console.print(Panel(block.strip(), title="Suggested Milestones"))
 
 
 async def _lookup_full_job(db: UlyssesDB, url: str) -> tuple[JobPost, JobScore]:
@@ -404,10 +417,13 @@ async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
         await _persist_prototype_files(db, job.id, prototype)
 
         output_dir = _write_prototype_to_disk(prototype, job.id)
-        (output_dir / "proposal.txt").write_text(proposal.full_text, encoding="utf-8")
+        (output_dir / "proposal.txt").write_text(
+            proposal.full_text + render_milestones_block(proposal.milestones), encoding="utf-8"
+        )
 
         console.print(f"[green]Output written to {output_dir}[/green]")
         console.print(Panel(proposal.full_text, title="Proposal"))
+        _print_milestones(proposal.milestones)
         console.print(Panel(prototype.readme_md, title="README.md"))
     finally:
         await db.dispose()
@@ -510,10 +526,13 @@ async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) ->
     await _persist_prototype_files(db, job.id, prototype)
 
     output_dir = _write_prototype_to_disk(prototype, job.id)
-    (output_dir / "proposal.txt").write_text(proposal.full_text, encoding="utf-8")
+    (output_dir / "proposal.txt").write_text(
+        proposal.full_text + render_milestones_block(proposal.milestones), encoding="utf-8"
+    )
 
     console.print(f"[green]Output written to {output_dir}[/green]")
     console.print(Panel(proposal.full_text, title="Proposal"))
+    _print_milestones(proposal.milestones)
     console.print(Panel(prototype.readme_md, title="README.md"))
 
 
