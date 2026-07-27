@@ -10,11 +10,13 @@ from ulysses.agents.proposal import (
     ProposalAgent,
     classify_category,
     estimate_timeline_and_bid,
+    milestone_count_for_days,
+    render_milestones_block,
     validate_proposal_text,
 )
 from ulysses.agents.scorer import score_job
 from ulysses.config.profile import Profile
-from ulysses.models import BudgetRange, BudgetType, JobPost
+from ulysses.models import BudgetRange, BudgetType, JobPost, Milestone
 
 
 def _job(fresh_job: JobPost, **overrides: object) -> JobPost:
@@ -75,9 +77,10 @@ class TestEstimateTimelineAndBid:
         job = _job(
             fresh_job, budget=BudgetRange(type=BudgetType.FIXED, min_amount=300, max_amount=300)
         )
-        timeline, bid = estimate_timeline_and_bid(job, profile)
+        timeline, bid, days = estimate_timeline_and_bid(job, profile)
         assert timeline == "4 days"
         assert bid == 300.0
+        assert days == 4
 
     def test_fixed_budget_clamped_to_max_14_days(
         self, fresh_job: JobPost, profile: Profile
@@ -85,24 +88,63 @@ class TestEstimateTimelineAndBid:
         job = _job(
             fresh_job, budget=BudgetRange(type=BudgetType.FIXED, min_amount=5000, max_amount=5000)
         )
-        timeline, _ = estimate_timeline_and_bid(job, profile)
+        timeline, _, days = estimate_timeline_and_bid(job, profile)
         assert timeline == "14 days"
+        assert days == 14
 
     def test_hourly_budget_is_ongoing(self, fresh_job: JobPost, profile: Profile) -> None:
         job = _job(
             fresh_job, budget=BudgetRange(type=BudgetType.HOURLY, min_amount=40, max_amount=40)
         )
-        timeline, bid = estimate_timeline_and_bid(job, profile)
+        timeline, bid, days = estimate_timeline_and_bid(job, profile)
         assert timeline == "Ongoing (hourly)"
         assert bid == 40.0
+        assert days is None
 
     def test_unknown_budget_falls_back_to_rate_based_estimate(
         self, fresh_job: JobPost, profile: Profile
     ) -> None:
         job = _job(fresh_job, budget=BudgetRange())
-        timeline, bid = estimate_timeline_and_bid(job, profile)
+        timeline, bid, days = estimate_timeline_and_bid(job, profile)
         assert timeline == "3 days"
         assert bid == profile.freelancer.rate_usd_hr * 3 * 4
+        assert days == 3
+
+
+class TestMilestoneCountForDays:
+    def test_one_to_two_days_is_one_milestone(self) -> None:
+        assert milestone_count_for_days(1) == 1
+        assert milestone_count_for_days(2) == 1
+
+    def test_three_to_five_days_is_two_milestones(self) -> None:
+        assert milestone_count_for_days(3) == 2
+        assert milestone_count_for_days(5) == 2
+
+    def test_six_to_nine_days_is_three_milestones(self) -> None:
+        assert milestone_count_for_days(6) == 3
+        assert milestone_count_for_days(9) == 3
+
+    def test_ten_to_fourteen_days_is_four_milestones(self) -> None:
+        assert milestone_count_for_days(10) == 4
+        assert milestone_count_for_days(14) == 4
+
+    def test_none_days_is_zero_milestones(self) -> None:
+        assert milestone_count_for_days(None) == 0
+
+
+class TestRenderMilestonesBlock:
+    def test_empty_list_renders_empty_string(self) -> None:
+        assert render_milestones_block([]) == ""
+
+    def test_renders_numbered_list_with_amount_and_days(self) -> None:
+        milestones = [
+            Milestone(description="Set up the scraper", amount_usd=100.0, days=2),
+            Milestone(description="Add validation and dedup", amount_usd=100.0, days=2),
+        ]
+        block = render_milestones_block(milestones)
+        assert "1. Set up the scraper — $100 (~2 days)" in block
+        assert "2. Add validation and dedup — $100 (~2 days)" in block
+        assert block.startswith("\n\nSuggested milestones:\n")
 
 
 class TestValidateProposalText:
@@ -117,13 +159,13 @@ class TestValidateProposalText:
         violations = validate_proposal_text("I am interested in your project.")
         assert any("i am interested" in v for v in violations)
 
-    def test_flags_over_800_characters(self) -> None:
-        text = "word " * 200  # 1000 characters
+    def test_flags_over_max_characters(self) -> None:
+        text = "word " * 250  # 1250 characters
         violations = validate_proposal_text(text)
-        assert any("800 characters" in v for v in violations)
+        assert any("1200 characters" in v for v in violations)
 
-    def test_allows_up_to_800_characters(self) -> None:
-        text = "word " * 150  # 750 characters
+    def test_allows_up_to_max_characters(self) -> None:
+        text = "word " * 200  # 1000 characters
         assert validate_proposal_text(text) == []
 
     def test_flags_more_than_two_emoji(self) -> None:
@@ -144,6 +186,8 @@ class TestProposalAgentGenerate:
         structured_output.plan_bullet_1 = "Set up a targeted scraper for the listing site."
         structured_output.plan_bullet_2 = "Validate and deduplicate with pandas."
         structured_output.plan_bullet_3 = "Schedule it via cron."
+        structured_output.close = "Happy to answer any questions before we start."
+        structured_output.milestones = []
 
         structured_llm = AsyncMock()
         structured_llm.ainvoke = AsyncMock(return_value=structured_output)
@@ -196,6 +240,109 @@ class TestProposalAgentGenerate:
         assert result.category == "scraping"
         assert "validation, dedup" in result.full_text
 
+    async def test_generate_includes_close_field_in_full_text(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        agent = ProposalAgent(llm=mock_llm)
+
+        result = await agent.generate(fresh_job, score, profile)
+
+        assert result.close
+        assert result.close in result.full_text
+
+    async def test_generate_phrases_hourly_pricing_as_a_rate_not_a_timeline(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
+    ) -> None:
+        job = _job(
+            fresh_job, budget=BudgetRange(type=BudgetType.HOURLY, min_amount=40, max_amount=40)
+        )
+        score = score_job(job, profile)
+        agent = ProposalAgent(llm=mock_llm)
+
+        result = await agent.generate(job, score, profile)
+
+        assert "Ongoing (hourly)" not in result.full_text
+        assert "$40/hr" in result.full_text
+
+    async def test_generate_yields_no_milestones_for_a_short_job(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        agent = ProposalAgent(llm=mock_llm)
+
+        result = await agent.generate(fresh_job, score, profile)
+
+        assert result.milestones == []
+        assert "Suggested milestones" not in result.full_text
+
+    async def test_generate_yields_no_milestones_for_hourly_jobs(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
+    ) -> None:
+        job = _job(
+            fresh_job, budget=BudgetRange(type=BudgetType.HOURLY, min_amount=40, max_amount=40)
+        )
+        score = score_job(job, profile)
+        agent = ProposalAgent(llm=mock_llm)
+
+        result = await agent.generate(job, score, profile)
+
+        assert result.milestones == []
+
+    async def test_generate_produces_milestones_scaled_to_project_length(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
+    ) -> None:
+        descriptions = ["Set up sync", "Build Excel refresh macro", "Wire up Sortly export"]
+        mock_llm.with_structured_output.return_value.ainvoke = AsyncMock(
+            return_value=MagicMock(
+                hook="hook",
+                plan_bullet_1="one",
+                plan_bullet_2="two",
+                plan_bullet_3="three",
+                close="close line",
+                milestones=descriptions,
+            )
+        )
+        job = _job(
+            fresh_job, budget=BudgetRange(type=BudgetType.FIXED, min_amount=600, max_amount=600)
+        )
+        score = score_job(job, profile)
+        agent = ProposalAgent(llm=mock_llm)
+
+        result = await agent.generate(job, score, profile)
+
+        assert len(result.milestones) == 3
+        assert [m.description for m in result.milestones] == descriptions
+        assert sum(m.amount_usd for m in result.milestones) == 600.0
+        assert sum(m.days for m in result.milestones) == 8
+        assert "Suggested milestones" not in result.full_text
+
+    async def test_generate_pads_milestones_when_llm_returns_too_few(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
+    ) -> None:
+        mock_llm.with_structured_output.return_value.ainvoke = AsyncMock(
+            return_value=MagicMock(
+                hook="hook",
+                plan_bullet_1="one",
+                plan_bullet_2="two",
+                plan_bullet_3="three",
+                close="close line",
+                milestones=["Only one description"],
+            )
+        )
+        job = _job(
+            fresh_job, budget=BudgetRange(type=BudgetType.FIXED, min_amount=600, max_amount=600)
+        )
+        score = score_job(job, profile)
+        agent = ProposalAgent(llm=mock_llm)
+
+        result = await agent.generate(job, score, profile)
+
+        assert len(result.milestones) == 3
+        assert result.milestones[0].description == "Only one description"
+        assert result.milestones[1].description == "Milestone 2 deliverable"
+        assert result.milestones[2].description == "Milestone 3 deliverable"
+
     async def test_generate_enforces_char_budget_without_cutting_off_pricing(
         self, fresh_job: JobPost, profile: Profile
     ) -> None:
@@ -204,6 +351,10 @@ class TestProposalAgentGenerate:
         structured_output.plan_bullet_1 = "A very long and detailed first step. " * 10
         structured_output.plan_bullet_2 = "A very long and detailed second step. " * 10
         structured_output.plan_bullet_3 = "A very long and detailed third step. " * 10
+        structured_output.close = (
+            "This is a fairly long closing line with a soft call to action. " * 5
+        )
+        structured_output.milestones = []
 
         structured_llm = AsyncMock()
         structured_llm.ainvoke = AsyncMock(return_value=structured_output)
@@ -216,6 +367,33 @@ class TestProposalAgentGenerate:
 
         result = await agent.generate(fresh_job, score, profile)
 
-        assert len(result.full_text) <= 800
-        assert f"Timeline: {result.timeline}" in result.full_text
+        assert len(result.full_text) <= 1200
+        assert result.timeline in result.full_text
         assert f"${result.bid_usd:.0f}" in result.full_text
+
+    async def test_generate_truncated_close_never_runs_into_the_pricing_line(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        # Regression test: a close truncated mid-sentence must not blur straight into
+        # the pricing line as one garbled run-on ("...or do we I can have this done...").
+        structured_output = MagicMock()
+        structured_output.hook = "A short hook."
+        structured_output.plan_bullet_1 = "one"
+        structured_output.plan_bullet_2 = "two"
+        structured_output.plan_bullet_3 = "three"
+        structured_output.close = "A very long closing sentence with no terminal punctuation " * 10
+        structured_output.milestones = []
+
+        structured_llm = AsyncMock()
+        structured_llm.ainvoke = AsyncMock(return_value=structured_output)
+        llm = MagicMock()
+        llm.bind = MagicMock(return_value=llm)
+        llm.with_structured_output = MagicMock(return_value=structured_llm)
+
+        score = score_job(fresh_job, profile)
+        agent = ProposalAgent(llm=llm)
+
+        result = await agent.generate(fresh_job, score, profile)
+
+        assert result.close.endswith((".", "!", "?"))
+        assert f"{result.close} I can have this done in" in result.full_text
