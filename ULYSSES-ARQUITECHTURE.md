@@ -81,6 +81,13 @@ score = (
 )
 ```
 
+The point values above are the *defaults* (`config.profile.ScoringWeights`), not
+hardcoded constants — tune any of them via `ulysses config set
+scoring.weights.<field> <value>`, informed by `ulysses analytics`'s
+scoring-weight suggestions (Phase 6). `agents.scorer.score_job` reads them from
+`profile.scoring.weights` on every call, so a weight change takes effect
+immediately with no code change or restart.
+
 **Also outputs:**
 - `matched_repos`: which of your GitHub projects best match this job
 - `gig_category`: Tier 1 / Tier 2 / Tier 3 (from the strategy doc)
@@ -330,12 +337,20 @@ ulysses queue --min-score 70 --category tier1
 # Mark a job as archived
 ulysses archive <job_id>
 
+# Record the final outcome once you hear back from a client -- feeds `ulysses analytics`
+ulysses won <job_id> --value 500 --note "great client"
+ulysses lost <job_id> --note "went with someone else"
+
+# Show win-rate breakdowns and scoring-weight suggestions from recorded outcomes
+ulysses analytics
+
 # View your current profile.yaml
 ulysses config show
 
 # Update a single profile.yaml field by its dotted key
 ulysses config set freelancer.rate_usd_hr 25
 ulysses config set skills.primary "python,fastapi,scraping,automation"
+ulysses config set scoring.weights.freshness_under_15_min 25
 
 # Install/remove a macOS LaunchAgent so `ulysses start` runs automatically on login
 ulysses install
@@ -368,7 +383,8 @@ ulysses/
 ├── tools/
 │   ├── email_reader.py   # IMAP connection + email parsing
 │   ├── job_parser.py     # Extracts structured JobPost from raw email
-│   ├── db.py             # SQLite — seen jobs, archives, scores
+│   ├── db.py             # SQLite — seen jobs, archives, scores, outcomes
+│   ├── analytics.py      # Win-rate breakdowns + scoring-weight suggestions (Phase 6)
 │   ├── github_mapper.py  # Maps job skills → your repos
 │   └── red_flag.py       # NLP pattern detector
 │
@@ -535,7 +551,26 @@ in, one job out — so it gets its own extraction, scoring, drafting, and
 prototyping pass, and a bad paste partway through the batch doesn't stop the
 rest from being processed.
 
-### Phase 6 — Intelligence Upgrades (Ongoing)
-- Fine-tune scoring weights based on your actual win rate
-- Add "what worked" feedback loop: when you get a contract, log which job score/category it was
-- A/B test proposal hooks over time
+### Phase 6 — Intelligence Upgrades
+`ulysses won <job_id>`/`ulysses lost <job_id>` record the final outcome for a
+job (contract value and a free-text note, for wins), which also updates its
+status to `WON`/`LOST`. `ulysses analytics` (backed by `tools/analytics.py`,
+pure functions over `(Job, Outcome)` pairs — no LLM calls) reports:
+- Win rate by tier category, by 25-point score bucket, and by red-flag
+  presence
+- Average total score for won jobs vs. lost jobs
+- Scoring-weight suggestions: which score component (freshness, proposal
+  count, client history, skill match, budget match) shows the widest gap
+  between won and lost jobs, once there are at least 5 of each with a
+  recoverable score breakdown. **Never applied automatically** — surfaced as
+  data to review and act on manually via `ulysses config set
+  scoring.weights.<field> <value>`, per AGENTS.md's "never override a score
+  without logging why."
+
+Scoring weights themselves moved from hardcoded constants in `scorer.py` into
+`profile.scoring.weights` (`config.profile.ScoringWeights`), so tuning them
+based on the above no longer requires a code change.
+
+Not yet built: A/B testing proposal hooks over time (deferred until there's
+enough won/lost proposal history to make pattern-tagging meaningful, rather
+than inventing an untested taxonomy up front).

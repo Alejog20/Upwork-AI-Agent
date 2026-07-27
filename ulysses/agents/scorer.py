@@ -8,37 +8,24 @@ Implements the weighted scoring formula from `ULYSSES-ARQUITECHTURE.md`:
           + skill_match(skills)       # 0-15
           + budget_match(budget)      # 0-10
 
-Each component function already returns points on its own weighted scale
-(they sum to a 100-point total), so `score_job` simply adds them.
+Each component function returns points on its own weighted scale (they sum to
+a 100-point total by default), so `score_job` simply adds them. The point
+values themselves live in `profile.scoring.weights` (see
+`config.profile.ScoringWeights`), not as module constants here, so they can be
+tuned via `ulysses config set` based on observed win rate instead of a code
+change.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from ulysses.config.profile import Profile
+from ulysses.config.profile import Profile, ScoringWeights
 from ulysses.models import BudgetRange, GigCategory, JobPost, JobScore, Recommendation
 from ulysses.tools.github_mapper import rank_matching_repos
 from ulysses.tools.red_flag import detect_red_flags
 
 __all__ = ["score_job"]
-
-_FRESHNESS_UNDER_15_MIN = 30.0
-_FRESHNESS_UNDER_1_HOUR = 20.0
-_FRESHNESS_STALE = 5.0
-
-_PROPOSALS_UNDER_5 = 25.0
-_PROPOSALS_5_TO_15 = 15.0
-_PROPOSALS_OVER_15 = 5.0
-_PROPOSALS_UNKNOWN = 15.0  # No proposal count is visible; assume the middle tier.
-
-_CLIENT_NO_HIRES = 20.0
-_CLIENT_1_TO_3_HIRES = 12.0
-_CLIENT_OVER_3_HIRES = 5.0
-
-_SKILL_MATCH_MAX_POINTS = 15.0
-_BUDGET_MATCH_MAX_POINTS = 10.0
-_BUDGET_UNKNOWN_POINTS = 5.0  # Neutral score when no budget is listed at all.
 
 
 def score_job(job: JobPost, profile: Profile, *, now: datetime | None = None) -> JobScore:
@@ -55,13 +42,14 @@ def score_job(job: JobPost, profile: Profile, *, now: datetime | None = None) ->
         gig category, and a recommended action.
     """
     now = now or datetime.now(UTC)
+    weights = profile.scoring.weights
 
-    freshness_score = _score_freshness(job.posted_at, now)
-    proposal_score = _score_proposal_count(job.proposals_count)
-    client_score = _score_client_history(job.client_hires)
-    skill_score = _score_skill_match(job.skills_required, profile.skills.all)
+    freshness_score = _score_freshness(job.posted_at, now, weights)
+    proposal_score = _score_proposal_count(job.proposals_count, weights)
+    client_score = _score_client_history(job.client_hires, weights)
+    skill_score = _score_skill_match(job.skills_required, profile.skills.all, weights)
     budget_score = _score_budget_match(
-        job.budget, profile.scoring.target_budget_min, profile.scoring.target_budget_max
+        job.budget, profile.scoring.target_budget_min, profile.scoring.target_budget_max, weights
     )
 
     total_score = round(
@@ -94,34 +82,36 @@ def score_job(job: JobPost, profile: Profile, *, now: datetime | None = None) ->
     )
 
 
-def _score_freshness(posted_at: datetime, now: datetime) -> float:
+def _score_freshness(posted_at: datetime, now: datetime, weights: ScoringWeights) -> float:
     age_minutes = (now - posted_at).total_seconds() / 60
     if age_minutes < 15:
-        return _FRESHNESS_UNDER_15_MIN
+        return weights.freshness_under_15_min
     if age_minutes < 60:
-        return _FRESHNESS_UNDER_1_HOUR
-    return _FRESHNESS_STALE
+        return weights.freshness_under_1_hour
+    return weights.freshness_stale
 
 
-def _score_proposal_count(proposals_count: int | None) -> float:
+def _score_proposal_count(proposals_count: int | None, weights: ScoringWeights) -> float:
     if proposals_count is None:
-        return _PROPOSALS_UNKNOWN
+        return weights.proposals_unknown  # No proposal count visible; assume the middle tier.
     if proposals_count < 5:
-        return _PROPOSALS_UNDER_5
+        return weights.proposals_under_5
     if proposals_count <= 15:
-        return _PROPOSALS_5_TO_15
-    return _PROPOSALS_OVER_15
+        return weights.proposals_5_to_15
+    return weights.proposals_over_15
 
 
-def _score_client_history(client_hires: int) -> float:
+def _score_client_history(client_hires: int, weights: ScoringWeights) -> float:
     if client_hires == 0:
-        return _CLIENT_NO_HIRES
+        return weights.client_no_hires
     if client_hires <= 3:
-        return _CLIENT_1_TO_3_HIRES
-    return _CLIENT_OVER_3_HIRES
+        return weights.client_1_to_3_hires
+    return weights.client_over_3_hires
 
 
-def _score_skill_match(skills_required: list[str], profile_skills: list[str]) -> float:
+def _score_skill_match(
+    skills_required: list[str], profile_skills: list[str], weights: ScoringWeights
+) -> float:
     if not skills_required:
         return 0.0
     required = {skill.strip().lower() for skill in skills_required}
@@ -129,20 +119,23 @@ def _score_skill_match(skills_required: list[str], profile_skills: list[str]) ->
     if not required:
         return 0.0
     overlap_fraction = len(required & known) / len(required)
-    return round(overlap_fraction * _SKILL_MATCH_MAX_POINTS, 2)
+    return round(overlap_fraction * weights.skill_match_max_points, 2)
 
 
-def _score_budget_match(budget: BudgetRange, target_min: float, target_max: float) -> float:
+def _score_budget_match(
+    budget: BudgetRange, target_min: float, target_max: float, weights: ScoringWeights
+) -> float:
     midpoint = budget.midpoint
+    max_points = weights.budget_match_max_points
     if midpoint is None:
-        return _BUDGET_UNKNOWN_POINTS
+        return weights.budget_unknown_points  # Neutral score when no budget is listed at all.
     if target_min <= midpoint <= target_max:
-        return _BUDGET_MATCH_MAX_POINTS
+        return max_points
     if midpoint < target_min:
-        scaled = _BUDGET_MATCH_MAX_POINTS * (midpoint / target_min)
+        scaled = max_points * (midpoint / target_min)
     else:
-        scaled = _BUDGET_MATCH_MAX_POINTS * (target_max / midpoint)
-    return round(max(0.0, min(_BUDGET_MATCH_MAX_POINTS, scaled)), 2)
+        scaled = max_points * (target_max / midpoint)
+    return round(max(0.0, min(max_points, scaled)), 2)
 
 
 def _categorize(

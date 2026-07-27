@@ -33,6 +33,13 @@ from ulysses.config.profile import (
 from ulysses.config.settings import Settings, get_settings
 from ulysses.graph.graph import build_graph
 from ulysses.models import GeneratedPrototype, JobPost, JobScore, Milestone
+from ulysses.tools.analytics import (
+    average_score_won_vs_lost,
+    scoring_weight_suggestions,
+    win_rate_by_category,
+    win_rate_by_red_flags,
+    win_rate_by_score_bucket,
+)
 from ulysses.tools.db import Job, JobStatus, UlyssesDB
 from ulysses.tools.email_reader import EmailReader
 from ulysses.tools.launch_agent import install_launch_agent, uninstall_launch_agent
@@ -678,6 +685,94 @@ async def _archive_async(settings: Settings, job_id: str) -> None:
         console.print(f"[green]Archived:[/green] {job.title}")
     finally:
         await db.dispose()
+
+
+@app.command()
+def won(
+    job_id: str,
+    value: float | None = typer.Option(
+        None, "--value", help="Final contract value in USD, if known."
+    ),
+    note: str | None = typer.Option(None, "--note", help="Optional note about the win."),
+) -> None:
+    """Mark a job as won, recording the outcome for `ulysses analytics`."""
+    settings = get_settings()
+    asyncio.run(_record_outcome_async(settings, job_id, won=True, value=value, note=note))
+
+
+@app.command()
+def lost(
+    job_id: str,
+    note: str | None = typer.Option(None, "--note", help="Optional note about why it was lost."),
+) -> None:
+    """Mark a job as lost, recording the outcome for `ulysses analytics`."""
+    settings = get_settings()
+    asyncio.run(_record_outcome_async(settings, job_id, won=False, value=None, note=note))
+
+
+async def _record_outcome_async(
+    settings: Settings, job_id: str, *, won: bool, value: float | None, note: str | None
+) -> None:
+    db = UlyssesDB(settings.db_path)
+    await db.init()
+    try:
+        job = await db.get_job(job_id)
+        if job is None:
+            console.print(f"[red]No job found with id:[/red] {job_id}")
+            raise typer.Exit(code=1)
+        await db.record_outcome(job_id, won=won, contract_value_usd=value, note=note)
+        console.print(f"[green]{'Won' if won else 'Lost'}:[/green] {job.title}")
+    finally:
+        await db.dispose()
+
+
+@app.command()
+def analytics() -> None:
+    """Show win-rate breakdowns and scoring-weight suggestions from recorded outcomes."""
+    settings = get_settings()
+    asyncio.run(_analytics_async(settings))
+
+
+async def _analytics_async(settings: Settings) -> None:
+    db = UlyssesDB(settings.db_path)
+    await db.init()
+    try:
+        pairs = await db.list_jobs_with_outcomes()
+    finally:
+        await db.dispose()
+
+    if not pairs:
+        console.print(
+            "[yellow]No outcomes recorded yet -- use `ulysses won <job_id>` / "
+            "`ulysses lost <job_id>` to start building win-rate data.[/yellow]"
+        )
+        return
+
+    won_count = sum(1 for _, outcome in pairs if outcome.won)
+    console.print(
+        f"[bold]{len(pairs)} outcomes recorded[/bold] — {won_count} won, "
+        f"{len(pairs) - won_count} lost ({won_count / len(pairs):.0%} win rate overall)\n"
+    )
+
+    _print_win_rate_table("Win Rate by Category", win_rate_by_category(pairs))
+    _print_win_rate_table("Win Rate by Score Bucket", win_rate_by_score_bucket(pairs))
+    _print_win_rate_table("Win Rate by Red Flags", win_rate_by_red_flags(pairs))
+
+    average = average_score_won_vs_lost(pairs)
+    console.print(f"Average score — won: {average['won']:.1f} | lost: {average['lost']:.1f}\n")
+
+    console.print("[bold]Scoring weight suggestions[/bold] (never applied automatically):")
+    for suggestion in scoring_weight_suggestions(pairs):
+        console.print(f"  • {suggestion}")
+
+
+def _print_win_rate_table(title: str, rates: dict[str, float]) -> None:
+    table = Table(title=title)
+    table.add_column("Bucket", style="cyan")
+    table.add_column("Win rate", justify="right", style="magenta")
+    for label, rate in rates.items():
+        table.add_row(label, f"{rate:.0%}")
+    console.print(table)
 
 
 @config_app.command("show")

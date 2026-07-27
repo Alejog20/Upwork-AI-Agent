@@ -14,6 +14,7 @@ __all__ = [
     "ProfileKeyError",
     "RepoConfig",
     "ScoringConfig",
+    "ScoringWeights",
     "SkillsConfig",
     "load_profile",
     "save_profile",
@@ -59,6 +60,34 @@ class RepoConfig(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class ScoringWeights(BaseModel):
+    """Point values for each scoring component in `agents.scorer.score_job`.
+
+    Defaults match the weighting model from `ULYSSES-ARQUITECHTURE.md` (each
+    component's points sum to 100). Tune these based on observed win rate via
+    `ulysses config set scoring.weights.<field> <value>` -- see
+    `tools.analytics.scoring_weight_suggestions` for data-driven suggestions,
+    which are never applied automatically.
+    """
+
+    freshness_under_15_min: float = 30.0
+    freshness_under_1_hour: float = 20.0
+    freshness_stale: float = 5.0
+
+    proposals_under_5: float = 25.0
+    proposals_5_to_15: float = 15.0
+    proposals_over_15: float = 5.0
+    proposals_unknown: float = 15.0
+
+    client_no_hires: float = 20.0
+    client_1_to_3_hires: float = 12.0
+    client_over_3_hires: float = 5.0
+
+    skill_match_max_points: float = 15.0
+    budget_match_max_points: float = 10.0
+    budget_unknown_points: float = 5.0
+
+
 class ScoringConfig(BaseModel):
     """Tunable thresholds that drive the Scorer Agent and alerting behavior."""
 
@@ -68,6 +97,7 @@ class ScoringConfig(BaseModel):
     instant_alert_threshold: float
     skip_if_proposals_above: int
     skip_if_posted_hours_ago: float
+    weights: ScoringWeights = Field(default_factory=ScoringWeights)
 
 
 class AlertsConfig(BaseModel):

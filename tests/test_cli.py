@@ -222,6 +222,80 @@ class TestArchiveCommand:
         assert asyncio.run(_check_status()) == JobStatus.ARCHIVED
 
 
+class TestWonLostCommands:
+    def test_won_errors_for_unknown_job(self) -> None:
+        result = runner.invoke(app, ["won", "no-such-id"])
+        assert result.exit_code == 1
+        assert "No job found" in result.stdout
+
+    def test_won_marks_job_and_records_outcome(self) -> None:
+        settings = get_settings()
+        asyncio.run(_seed_job(settings.db_path, id="job-1", title="Some job"))
+
+        result = runner.invoke(app, ["won", "job-1", "--value", "500", "--note", "great client"])
+
+        assert result.exit_code == 0
+        assert "Won" in result.stdout
+
+        async def _check() -> tuple[JobStatus, float | None]:
+            db = UlyssesDB(settings.db_path)
+            await db.init()
+            job = await db.get_job("job-1")
+            outcomes = await db.list_outcomes()
+            await db.dispose()
+            assert job is not None
+            return job.status, outcomes[0].contract_value_usd
+
+        status, value = asyncio.run(_check())
+        assert status == JobStatus.WON
+        assert value == 500.0
+
+    def test_lost_errors_for_unknown_job(self) -> None:
+        result = runner.invoke(app, ["lost", "no-such-id"])
+        assert result.exit_code == 1
+        assert "No job found" in result.stdout
+
+    def test_lost_marks_job(self) -> None:
+        settings = get_settings()
+        asyncio.run(_seed_job(settings.db_path, id="job-1", title="Some job"))
+
+        result = runner.invoke(app, ["lost", "job-1", "--note", "went with someone else"])
+
+        assert result.exit_code == 0
+        assert "Lost" in result.stdout
+
+        async def _check_status() -> JobStatus:
+            db = UlyssesDB(settings.db_path)
+            await db.init()
+            job = await db.get_job("job-1")
+            await db.dispose()
+            assert job is not None
+            return job.status
+
+        assert asyncio.run(_check_status()) == JobStatus.LOST
+
+
+class TestAnalyticsCommand:
+    def test_shows_message_when_no_outcomes_recorded(self) -> None:
+        result = runner.invoke(app, ["analytics"])
+        assert result.exit_code == 0
+        assert "No outcomes recorded yet" in result.stdout
+
+    def test_shows_win_rate_breakdown_after_recording_outcomes(self) -> None:
+        settings = get_settings()
+        asyncio.run(_seed_job(settings.db_path, id="job-1", title="Won job", score=90.0))
+        asyncio.run(_seed_job(settings.db_path, id="job-2", title="Lost job", score=40.0))
+        runner.invoke(app, ["won", "job-1"])
+        runner.invoke(app, ["lost", "job-2"])
+
+        result = runner.invoke(app, ["analytics"])
+
+        assert result.exit_code == 0
+        assert "2 outcomes recorded" in result.stdout
+        assert "Win Rate by Category" in result.stdout
+        assert "Scoring weight suggestions" in result.stdout
+
+
 class TestConfigCommands:
     @pytest.fixture(autouse=True)
     def _tmp_profile(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

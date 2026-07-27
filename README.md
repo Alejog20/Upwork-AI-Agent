@@ -7,12 +7,15 @@ Telegram with one-tap actions to draft a proposal or build a demo prototype.
 See `ULYSSES-ARQUITECHTURE.md` for the full system design and `CLAUDE.md` for
 project development standards.
 
-Current status: **Phase 5** — all five agents are live, the CLI is complete
-(`start`, `status`, `draft`, `build`, `go`, `chat`, `queue`, `archive`,
-`config`, `install`/`uninstall`), there's a native macOS menu bar app with
-LaunchAgent auto-start, and `ulysses chat` lets you paste a job listing
-straight from the Upwork website and run it through the whole pipeline
-without waiting on email. Phase 6 (analytics/win-rate tuning) is next.
+Current status: **Phase 6** — all five agents are live, the CLI is complete
+(`start`, `status`, `draft`, `build`, `go`, `chat`, `queue`, `archive`, `won`,
+`lost`, `analytics`, `config`, `install`/`uninstall`), there's a native macOS
+menu bar app with LaunchAgent auto-start, `ulysses chat` lets you paste a job
+listing straight from the Upwork website and run it through the whole
+pipeline without waiting on email, and `ulysses won`/`ulysses lost` feed a
+win-rate analytics dashboard (`ulysses analytics`) that surfaces data-driven
+scoring-weight suggestions — never applied automatically, always reviewed by
+you first.
 
 ## Requirements
 
@@ -136,17 +139,35 @@ uv run ulysses queue --min-score 70 --category tier1
 uv run ulysses archive <job_id>
 ```
 
+Once you hear back from a client, record the outcome — this is what powers
+`ulysses analytics` (see below):
+
+```bash
+uv run ulysses won <job_id> --value 500 --note "great client"
+uv run ulysses lost <job_id> --note "went with someone else"
+```
+
+See win-rate breakdowns by category, score bucket, and red-flag presence,
+plus data-driven scoring-weight suggestions (never applied automatically —
+you decide whether to act on them):
+
+```bash
+uv run ulysses analytics
+```
+
 View or update your `profile.yaml` from the terminal:
 
 ```bash
 uv run ulysses config show
 uv run ulysses config set freelancer.rate_usd_hr 30
 uv run ulysses config set skills.primary "python,fastapi,scraping"
+uv run ulysses config set scoring.weights.freshness_under_15_min 25
 ```
 
 (Scalar fields are type-coerced automatically; comma-separated values are
 split into a list. Nested list-of-object fields like `repos` aren't settable
-this way — edit `profile.yaml` directly for those.)
+this way — edit `profile.yaml` directly for those. Scoring weights live under
+`scoring.weights.*` — see `ulysses config show` for every tunable field.)
 
 ## Running 24/7
 
