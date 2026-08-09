@@ -32,7 +32,7 @@ from ulysses.config.profile import (
 )
 from ulysses.config.settings import Settings, get_settings
 from ulysses.graph.graph import build_graph
-from ulysses.models import GeneratedPrototype, JobPost, JobScore, Milestone
+from ulysses.models import GeneratedPrototype, JobPost, JobScore, Milestone, Recommendation
 from ulysses.tools.analytics import (
     average_score_won_vs_lost,
     scoring_weight_suggestions,
@@ -521,6 +521,14 @@ async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) ->
         )
     )
     _print_score_summary(job, score)
+
+    if score.recommendation is Recommendation.SKIP:
+        console.print(
+            "[yellow]Recommendation: SKIP — not drafting a proposal or building a demo "
+            "for this one. Use `ulysses draft`/`build`/`go <url>` if you want them "
+            "anyway.[/yellow]\n"
+        )
+        return
 
     proposal_agent = ProposalAgent()
     prototype_agent = PrototypeAgent()

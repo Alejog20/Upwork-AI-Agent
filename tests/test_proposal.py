@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+from pytest_mock import MockerFixture
 
 from ulysses.agents.proposal import (
     ProposalAgent,
@@ -17,6 +19,7 @@ from ulysses.agents.proposal import (
 from ulysses.agents.scorer import score_job
 from ulysses.config.profile import Profile
 from ulysses.models import BudgetRange, BudgetType, JobPost, Milestone
+from ulysses.tools.example_retrieval import ExampleProposal
 
 
 def _job(fresh_job: JobPost, **overrides: object) -> JobPost:
@@ -197,11 +200,89 @@ class TestProposalAgentGenerate:
         llm.with_structured_output = MagicMock(return_value=structured_llm)
         return llm
 
+    async def test_generate_includes_few_shot_turns_when_example_matches(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock, mocker: MockerFixture
+    ) -> None:
+        example = ExampleProposal(
+            job_title="Example job",
+            job_description="Example description",
+            skills=["python"],
+            category="scraping",
+            proof_repo="ExampleRepo",
+            proof_repo_url="https://github.com/example/repo",
+            hook="Example hook.",
+            plan_bullet_1="Example step one.",
+            plan_bullet_2="Example step two.",
+            plan_bullet_3="Example step three.",
+            close="Example close.",
+        )
+        mocker.patch(
+            "ulysses.agents.proposal.find_best_matching_example",
+            new=AsyncMock(return_value=example),
+        )
+        score = score_job(fresh_job, profile)
+        agent = ProposalAgent(llm=mock_llm, examples=[example])
+
+        await agent.generate(fresh_job, score, profile)
+
+        structured_llm = mock_llm.with_structured_output.return_value
+        prompt = structured_llm.ainvoke.await_args.args[0]
+        assert len(prompt) == 4  # system, example-user, example-assistant, real-user
+        assert prompt[0]["role"] == "system"
+        assert prompt[1]["role"] == "user"
+        assert "Example job" in prompt[1]["content"]
+        assert prompt[2]["role"] == "assistant"
+        assert "Example hook." in prompt[2]["content"]
+        assert prompt[3]["role"] == "user"
+        assert fresh_job.title in prompt[3]["content"]
+
+    async def test_generate_omits_few_shot_turns_when_no_example_matches(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
+
+        await agent.generate(fresh_job, score, profile)
+
+        structured_llm = mock_llm.with_structured_output.return_value
+        prompt = structured_llm.ainvoke.await_args.args[0]
+        assert len(prompt) == 2  # system, real-user only
+
+    async def test_generate_continues_without_example_when_retrieval_fails(
+        self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock, mocker: MockerFixture
+    ) -> None:
+        mocker.patch(
+            "ulysses.agents.proposal.find_best_matching_example",
+            new=AsyncMock(side_effect=httpx.ConnectError("boom")),
+        )
+        score = score_job(fresh_job, profile)
+        unused_example = ExampleProposal(
+            job_title="Example job",
+            job_description="Example description",
+            skills=["python"],
+            category="scraping",
+            proof_repo="ExampleRepo",
+            proof_repo_url="https://github.com/example/repo",
+            hook="Example hook.",
+            plan_bullet_1="Example step one.",
+            plan_bullet_2="Example step two.",
+            plan_bullet_3="Example step three.",
+            close="Example close.",
+        )
+        agent = ProposalAgent(llm=mock_llm, examples=[unused_example])
+
+        result = await agent.generate(fresh_job, score, profile)
+
+        assert result.full_text  # generation still succeeds
+        structured_llm = mock_llm.with_structured_output.return_value
+        prompt = structured_llm.ainvoke.await_args.args[0]
+        assert len(prompt) == 2  # no few-shot turns added after the failure
+
     async def test_generate_fills_template_with_llm_output(
         self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
     ) -> None:
         score = score_job(fresh_job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(fresh_job, score, profile)
 
@@ -217,7 +298,7 @@ class TestProposalAgentGenerate:
         self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
     ) -> None:
         score = score_job(fresh_job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(fresh_job, score, profile)
 
@@ -233,7 +314,7 @@ class TestProposalAgentGenerate:
             skills_required=["web scraping", "beautifulsoup"],
         )
         score = score_job(job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(job, score, profile)
 
@@ -244,7 +325,7 @@ class TestProposalAgentGenerate:
         self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
     ) -> None:
         score = score_job(fresh_job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(fresh_job, score, profile)
 
@@ -258,7 +339,7 @@ class TestProposalAgentGenerate:
             fresh_job, budget=BudgetRange(type=BudgetType.HOURLY, min_amount=40, max_amount=40)
         )
         score = score_job(job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(job, score, profile)
 
@@ -269,7 +350,7 @@ class TestProposalAgentGenerate:
         self, fresh_job: JobPost, profile: Profile, mock_llm: MagicMock
     ) -> None:
         score = score_job(fresh_job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(fresh_job, score, profile)
 
@@ -283,7 +364,7 @@ class TestProposalAgentGenerate:
             fresh_job, budget=BudgetRange(type=BudgetType.HOURLY, min_amount=40, max_amount=40)
         )
         score = score_job(job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(job, score, profile)
 
@@ -307,7 +388,7 @@ class TestProposalAgentGenerate:
             fresh_job, budget=BudgetRange(type=BudgetType.FIXED, min_amount=600, max_amount=600)
         )
         score = score_job(job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(job, score, profile)
 
@@ -334,7 +415,7 @@ class TestProposalAgentGenerate:
             fresh_job, budget=BudgetRange(type=BudgetType.FIXED, min_amount=600, max_amount=600)
         )
         score = score_job(job, profile)
-        agent = ProposalAgent(llm=mock_llm)
+        agent = ProposalAgent(llm=mock_llm, examples=[])
 
         result = await agent.generate(job, score, profile)
 
@@ -363,7 +444,7 @@ class TestProposalAgentGenerate:
         llm.with_structured_output = MagicMock(return_value=structured_llm)
 
         score = score_job(fresh_job, profile)
-        agent = ProposalAgent(llm=llm)
+        agent = ProposalAgent(llm=llm, examples=[])
 
         result = await agent.generate(fresh_job, score, profile)
 
@@ -391,7 +472,7 @@ class TestProposalAgentGenerate:
         llm.with_structured_output = MagicMock(return_value=structured_llm)
 
         score = score_job(fresh_job, profile)
-        agent = ProposalAgent(llm=llm)
+        agent = ProposalAgent(llm=llm, examples=[])
 
         result = await agent.generate(fresh_job, score, profile)
 

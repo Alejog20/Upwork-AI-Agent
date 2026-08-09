@@ -191,6 +191,12 @@ from the cover-letter proposal.
   the completion itself is capped via `max_tokens`, to keep quality high without
   wasting tokens. A moderately high sampling temperature is used to avoid the flat,
   repetitive phrasing that reads as AI-generated
+- Before drafting, `tools/example_retrieval.py` embeds the real job and every
+  curated example in `config/example_proposals.yaml`, then shows the single
+  closest match (by cosine similarity) to the LLM as a genuine few-shot
+  user/assistant turn pair — JSON-shaped to mirror the structured-output schema,
+  not free prose — before the real job's turn. Degrades gracefully (drafts with
+  no example) if retrieval fails or the corpus is empty; never blocks generation
 
 **Example output for a scraping job:**
 ```
@@ -381,12 +387,13 @@ ulysses/
 │   └── graph.py          # LangGraph StateGraph assembly
 │
 ├── tools/
-│   ├── email_reader.py   # IMAP connection + email parsing
-│   ├── job_parser.py     # Extracts structured JobPost from raw email
-│   ├── db.py             # SQLite — seen jobs, archives, scores, outcomes
-│   ├── analytics.py      # Win-rate breakdowns + scoring-weight suggestions (Phase 6)
-│   ├── github_mapper.py  # Maps job skills → your repos
-│   └── red_flag.py       # NLP pattern detector
+│   ├── email_reader.py       # IMAP connection + email parsing
+│   ├── job_parser.py         # Extracts structured JobPost from raw email
+│   ├── db.py                 # SQLite — seen jobs, archives, scores, outcomes
+│   ├── analytics.py          # Win-rate breakdowns + scoring-weight suggestions (Phase 6)
+│   ├── example_retrieval.py  # Semantic retrieval of curated example proposals
+│   ├── github_mapper.py      # Maps job skills → your repos
+│   └── red_flag.py           # NLP pattern detector
 │
 ├── templates/
 │   ├── proposals/
@@ -407,8 +414,9 @@ ulysses/
 │   └── main.py           # Typer-based CLI entry point
 │
 ├── config/
-│   ├── settings.py       # Pydantic Settings (loads from .env)
-│   └── profile.yaml      # Your skills, repos, rate, preferences
+│   ├── settings.py             # Pydantic Settings (loads from .env)
+│   ├── profile.yaml            # Your skills, repos, rate, preferences
+│   └── example_proposals.yaml  # Curated example proposals for few-shot retrieval
 │
 ├── tests/
 │   ├── test_scorer.py
@@ -534,9 +542,13 @@ Native macOS menu bar app with LaunchAgent auto-start.
 copied straight from the Upwork website (no email required), and it's
 extracted into a structured job via LLM (since real notification emails have
 a stable HTML structure to key off of, but a manual paste doesn't), scored,
-persisted to the same database scout-ingested jobs use, then drafted and
-prototyped exactly like `ulysses go`. Results print to the terminal and save
-to `./output/<job_id>/`; the loop continues for the next paste until you quit.
+persisted to the same database scout-ingested jobs use, then — unless the
+Scorer Agent's recommendation is `SKIP` — drafted and prototyped exactly like
+`ulysses go`. A `SKIP`-recommended job is persisted and its score summary is
+shown, but proposal/prototype generation is skipped entirely (a one-line note
+says so); use `ulysses draft`/`build`/`go <url>` afterward to force it anyway
+if you disagree with the recommendation. Results print to the terminal and
+save to `./output/<job_id>/`; the loop continues for the next paste until you quit.
 This bypasses the LangGraph pipeline's Telegram-oriented interrupt/resume
 step entirely — the same way the real production Telegram flow already does
 after a button press — rather than building on that mechanism's unused,

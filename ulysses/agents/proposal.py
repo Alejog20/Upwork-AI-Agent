@@ -19,10 +19,12 @@ from the cover-letter text, so it's informational rather than paste-ready.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from pathlib import Path
 
+import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -30,6 +32,11 @@ from pydantic import BaseModel, Field
 from ulysses.config.profile import Profile
 from ulysses.config.settings import get_settings
 from ulysses.models import BudgetType, GeneratedProposal, JobPost, JobScore, Milestone
+from ulysses.tools.example_retrieval import (
+    ExampleProposal,
+    find_best_matching_example,
+    load_example_proposals,
+)
 from ulysses.tools.llm import ainvoke_with_retry, get_llm
 
 __all__ = [
@@ -364,13 +371,21 @@ def validate_proposal_text(text: str) -> list[str]:
 class ProposalAgent:
     """Generates a human-sounding, professional Upwork proposal draft for a scored job."""
 
-    def __init__(self, llm: BaseChatModel | None = None) -> None:
+    def __init__(
+        self,
+        llm: BaseChatModel | None = None,
+        examples: list[ExampleProposal] | None = None,
+    ) -> None:
         """Create a Proposal Agent.
 
         Args:
             llm: Chat model to use. Defaults to the shared client from `get_llm()`.
+            examples: Curated example proposals for few-shot retrieval. Defaults
+                to `load_example_proposals()` (the bundled
+                `config/example_proposals.yaml`).
         """
         self._llm = llm or get_llm()
+        self._examples = examples if examples is not None else load_example_proposals()
 
     async def generate(self, job: JobPost, score: JobScore, profile: Profile) -> GeneratedProposal:
         """Generate a complete, template-filled proposal draft for a scored job.
@@ -395,8 +410,18 @@ class ProposalAgent:
         structured_llm = self._llm.bind(
             max_tokens=_MAX_OUTPUT_TOKENS, temperature=_LLM_TEMPERATURE
         ).with_structured_output(_ProposalLLMOutput)
-        prompt = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+
+        try:
+            best_example = await find_best_matching_example(job, self._examples)
+        except httpx.HTTPError as exc:
+            logger.bind(job_id=job.id, agent="proposal").warning(
+                "Example-proposal retrieval failed, drafting without a few-shot example: {}", exc
+            )
+            best_example = None
+
+        prompt: list[dict[str, str]] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        prompt.extend(_build_few_shot_turns(best_example))
+        prompt.append(
             {
                 "role": "user",
                 "content": _USER_PROMPT_TEMPLATE.format(
@@ -409,8 +434,8 @@ class ProposalAgent:
                     proof_repo_url=proof_repo_url,
                     milestone_count=milestone_count,
                 ),
-            },
-        ]
+            }
+        )
 
         start = time.monotonic()
         llm_output: _ProposalLLMOutput = await ainvoke_with_retry(structured_llm, prompt)
@@ -469,6 +494,44 @@ def _select_proof_repo(score: JobScore, profile: Profile) -> tuple[str, str]:
         top = score.matched_repos[0]
         return top.repo_name, top.url
     return "my portfolio", profile.freelancer.github
+
+
+def _build_few_shot_turns(example: ExampleProposal | None) -> list[dict[str, str]]:
+    """Build the user/assistant few-shot turn pair for a matched example, if any.
+
+    The assistant turn is JSON matching `_ProposalLLMOutput`'s field names, not
+    free-form prose -- confirmed against the real configured LLM to work well
+    as a demonstration ahead of a `.with_structured_output(...)` call, since it
+    mirrors the exact shape being asked for rather than mixing registers.
+    Returns an empty list (no turns added) when there's no example to show.
+    """
+    if example is None:
+        return []
+    user_turn = {
+        "role": "user",
+        "content": _USER_PROMPT_TEMPLATE.format(
+            title=example.job_title,
+            description=example.job_description,
+            skills=", ".join(example.skills) or "not specified",
+            proof_repo=example.proof_repo,
+            proof_repo_url=example.proof_repo_url,
+            milestone_count=len(example.milestones),
+        ),
+    }
+    assistant_turn = {
+        "role": "assistant",
+        "content": json.dumps(
+            {
+                "hook": example.hook,
+                "plan_bullet_1": example.plan_bullet_1,
+                "plan_bullet_2": example.plan_bullet_2,
+                "plan_bullet_3": example.plan_bullet_3,
+                "close": example.close,
+                "milestones": example.milestones,
+            }
+        ),
+    }
+    return [user_turn, assistant_turn]
 
 
 def _truncate_at_word_boundary(text: str, max_chars: int) -> str:

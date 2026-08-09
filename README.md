@@ -115,10 +115,13 @@ uv run ulysses chat
 
 Paste the listing text, then type `SUBMITJOB` and press Enter to submit it
 (or press **Ctrl+D**, if your terminal doesn't intercept it for something
-else — several GUI terminal apps do). Ulysses scores it, drafts a proposal,
-and builds a demo — same as `go`, but for a job copied straight from the
-Upwork website. Type `quit` (or press Ctrl+D with nothing typed) to leave,
-or paste another listing to keep going.
+else — several GUI terminal apps do). Ulysses scores it, then drafts a
+proposal and builds a demo — same as `go` — for a job copied straight from
+the Upwork website. If the score comes back recommending **SKIP**, it stops
+there instead: no proposal, no prototype, just a note telling you so (you can
+still force it with `ulysses draft`/`build`/`go <url>` if you want them
+anyway). Type `quit` (or press Ctrl+D with nothing typed) to leave, or paste
+another listing to keep going.
 
 Got several listings to process in one sitting? Paste one, type `NEXTJOB`
 and press Enter, paste the next, and repeat as many times as you like —
@@ -168,6 +171,21 @@ uv run ulysses config set scoring.weights.freshness_under_15_min 25
 split into a list. Nested list-of-object fields like `repos` aren't settable
 this way — edit `profile.yaml` directly for those. Scoring weights live under
 `scoring.weights.*` — see `ulysses config show` for every tunable field.)
+
+### Tuning proposal quality with example proposals
+
+`ulysses/config/example_proposals.yaml` holds a handful of hand-written
+"gold standard" example proposals. Before drafting, the Proposal Agent embeds
+the real job and every example, then shows the LLM the single closest match
+as a concrete demonstration of the desired tone and structure — a
+lightweight, no-fine-tuning way to steer quality. Add your own entries any
+time (each needs a stand-in job plus the ideal `hook`/`plan_bullet_1-3`/
+`close`/`milestones` response) — there's no fixed limit or one-per-category
+rule. This uses Gemini's native embeddings endpoint directly (a separate
+`ULYSSES_LLM_API_KEY`-authenticated call, not routed through
+`ULYSSES_LLM_BASE_URL`, since Gemini's OpenAI-compatible endpoint doesn't
+support embeddings); if retrieval fails for any reason, drafting proceeds
+without a few-shot example rather than failing the whole proposal.
 
 ## Running 24/7
 

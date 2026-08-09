@@ -10,7 +10,7 @@ plus the pure disk-writing helper used by `build`/`go`.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,7 +28,7 @@ from ulysses.cli.main import (
 )
 from ulysses.config.profile import DEFAULT_PROFILE_PATH, load_profile
 from ulysses.config.settings import get_settings
-from ulysses.models import BudgetRange, GeneratedPrototype, JobPost
+from ulysses.models import BudgetRange, BudgetType, GeneratedPrototype, JobPost
 from ulysses.tools.db import Job, JobStatus, UlyssesDB
 from ulysses.tools.manual_job import ManualJobParseError
 
@@ -443,6 +443,33 @@ class TestChatCommand:
         stored_job = asyncio.run(_check())
         assert stored_job is not None
         assert stored_job.title == job.title
+
+    def test_skip_recommended_job_never_drafts_or_builds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        # Stale, saturated with proposals, an experienced client, no skill overlap,
+        # and a budget far outside the target range -- scores well below
+        # min_score_to_notify, so score_job recommends SKIP.
+        weak_job = _mock_pasted_job(
+            posted_at=datetime.now(UTC) - timedelta(hours=10),
+            proposals_count=50,
+            client_hires=10,
+            skills_required=["cobol"],
+            budget=BudgetRange(type=BudgetType.FIXED, min_amount=5000, max_amount=5000),
+        )
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=weak_job))
+        proposal_agent_mock = mocker.patch("ulysses.cli.main.ProposalAgent")
+        prototype_agent_mock = mocker.patch("ulysses.cli.main.PrototypeAgent")
+
+        result = runner.invoke(app, ["chat"], input="A weak job listing.\n")
+
+        assert result.exit_code == 0
+        assert "Recommendation: SKIP" in result.stdout
+        assert "Generated proposal text." not in result.stdout
+        proposal_agent_mock.assert_not_called()
+        prototype_agent_mock.assert_not_called()
+        assert not (Path("output") / weak_job.id).exists()
 
     def test_extraction_failure_shows_friendly_error_and_continues_session(
         self, mocker: MockerFixture
