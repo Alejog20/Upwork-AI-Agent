@@ -29,4 +29,4 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Run tests with coverage
-        run: uv run pytest --cov=ulysses --cov-report=term-missing -v
+        run: uv run pytest --cov=ulysses --cov-report=term-missing --cov-fail-under=80 -v
