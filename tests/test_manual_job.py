@@ -157,10 +157,12 @@ class TestExtractJobFromText:
     async def test_long_pasted_input_is_not_truncated_before_reaching_the_llm(
         self, mock_llm: MagicMock
     ) -> None:
-        long_paste = _SAMPLE_LISTING + ("filler text " * 3000)  # ~36,000 chars, well under 60k
+        # No input-size cap exists anymore -- this deliberately exceeds the
+        # old 60,000-char limit to prove it's really gone, not just generous.
+        long_paste = _SAMPLE_LISTING + ("filler text " * 10_000)  # ~120,000 chars
 
         await extract_job_from_text(long_paste, llm=mock_llm)
 
         sent_prompt = mock_llm.with_structured_output.return_value.ainvoke.call_args.args[0]
         user_message = sent_prompt[1]["content"]
-        assert user_message.count("filler text") == 3000
+        assert user_message.count("filler text") == 10_000

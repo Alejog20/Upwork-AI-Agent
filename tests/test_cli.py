@@ -391,6 +391,15 @@ def _mock_prototype(job_id: str) -> MagicMock:
     return prototype
 
 
+def _mock_narrator_agent(mocker: MockerFixture, *blurbs: str) -> MagicMock:
+    """Patch `NarratorAgent` so chat tests never make a real LLM call for narration."""
+    texts = blurbs or ("A short verdict blurb.",)
+    return mocker.patch(
+        "ulysses.cli.main.NarratorAgent",
+        return_value=MagicMock(narrate=AsyncMock(side_effect=list(texts))),
+    )
+
+
 class TestChatCommand:
     def test_quitting_immediately_prints_goodbye_and_touches_nothing(
         self, mocker: MockerFixture
@@ -423,6 +432,7 @@ class TestChatCommand:
             "ulysses.cli.main.PrototypeAgent",
             return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
         )
+        _mock_narrator_agent(mocker)
 
         result = runner.invoke(app, ["chat"], input="Some pasted job text here.\n")
 
@@ -444,6 +454,31 @@ class TestChatCommand:
         assert stored_job is not None
         assert stored_job.title == job.title
 
+    def test_narrator_failure_does_not_block_drafting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        job = _mock_pasted_job()
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=job))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
+        )
+        mocker.patch(
+            "ulysses.cli.main.NarratorAgent",
+            return_value=MagicMock(narrate=AsyncMock(side_effect=RuntimeError("boom"))),
+        )
+
+        result = runner.invoke(app, ["chat"], input="Some pasted job text here.\n")
+
+        assert result.exit_code == 0
+        assert "Generated proposal text." in result.stdout  # drafting still happened
+        assert "# Demo" in result.stdout
+
     def test_skip_recommended_job_never_drafts_or_builds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
@@ -461,11 +496,13 @@ class TestChatCommand:
         mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=weak_job))
         proposal_agent_mock = mocker.patch("ulysses.cli.main.ProposalAgent")
         prototype_agent_mock = mocker.patch("ulysses.cli.main.PrototypeAgent")
+        _mock_narrator_agent(mocker, "I'd skip this one.")
 
         result = runner.invoke(app, ["chat"], input="A weak job listing.\n")
 
         assert result.exit_code == 0
-        assert "Recommendation: SKIP" in result.stdout
+        assert "I'd skip this one." in result.stdout
+        assert "Not drafting a proposal" in result.stdout
         assert "Generated proposal text." not in result.stdout
         proposal_agent_mock.assert_not_called()
         prototype_agent_mock.assert_not_called()
@@ -511,6 +548,7 @@ class TestChatCommand:
                 generate=AsyncMock(side_effect=[_mock_prototype("job-1"), _mock_prototype("job-2")])
             ),
         )
+        _mock_narrator_agent(mocker, "Blurb one.", "Blurb two.")
 
         result = runner.invoke(
             app,
@@ -547,6 +585,7 @@ class TestChatCommand:
                 generate=AsyncMock(side_effect=[_mock_prototype("job-1"), _mock_prototype("job-2")])
             ),
         )
+        _mock_narrator_agent(mocker, "Blurb one.", "Blurb two.")
 
         result = runner.invoke(
             app,

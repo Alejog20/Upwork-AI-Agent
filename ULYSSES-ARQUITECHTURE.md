@@ -5,7 +5,7 @@
 
 ## System Overview
 
-Ulysses is an orchestrated pipeline of 5 specialized agents that work together: one watches for gigs, one scores them, one notifies you, one writes proposals, and one builds demo prototypes. You interact entirely through Telegram inline buttons or the Python CLI.
+Ulysses is an orchestrated pipeline of 6 specialized agents that work together: one watches for gigs, one scores them, one explains the verdict in plain language, one notifies you, one writes proposals, and one builds demo prototypes. You interact entirely through Telegram inline buttons or the Python CLI.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -108,7 +108,37 @@ RED_FLAGS = [
 
 ---
 
-### 3. Notifier Agent (Telegram Bot)
+### 3. Narrator Agent
+**Responsibility:** Explain a job's scoring verdict in one or two sentences, in Ulysses' own
+voice — the *why* behind the numbers, not another readout of them. Used today in `ulysses chat`,
+printed right after the score table for every job (APPLY_NOW/REVIEW/SKIP alike), including jobs
+that get skipped — that's exactly the case that most needs a reason, since no proposal follows to
+speak for itself.
+
+**Input:** The job + its full `JobScore` breakdown + the freelancer's profile (for skill-overlap
+context).
+
+**Output:** A short, grounded blurb — never a bare label like "Recommendation: SKIP":
+```
+New client, posted 9 minutes ago, and your scraper repo is a direct match. I'd apply now.
+```
+```
+Stale posting with 20+ proposals already in -- you'd be shouting into a crowd. I'd skip this.
+```
+
+**Generation rules:**
+- Grounded strictly in the actual computed facts (posting age, proposal count, client history,
+  skill overlap, budget, red flags) — never invents a reason that isn't in the data
+- References at most 2 of the most decisive factors, not an exhaustive readout
+- One cheap, fast LLM call per job (small `max_tokens`, no structured proposal-length output) —
+  a small fraction of the cost a full proposal/prototype generation would be, so it's still worth
+  running even for a job about to be skipped
+- Degrades gracefully: if the call fails for any reason, drafting/building proceeds without a
+  blurb rather than blocking on what's a nice-to-have
+
+---
+
+### 4. Notifier Agent (Telegram Bot)
 **Responsibility:** Format and send scored jobs to you via Telegram with inline action buttons.
 
 **Message format:**
@@ -144,7 +174,7 @@ RED_FLAGS = [
 
 ---
 
-### 4. Proposal Agent
+### 5. Proposal Agent
 **Responsibility:** Draft a complete, Spartan-style Upwork cover letter tailored to the specific job.
 
 **Input:** Job description + Scorer output (matched repos, category, red flags)
@@ -225,7 +255,7 @@ Suggested milestones:
 
 ---
 
-### 5. Prototype Agent
+### 6. Prototype Agent
 **Responsibility:** Generate a demo Python script + README that proves you can do the job, before you're hired.
 
 **Input:** Job description + Scorer output
@@ -375,6 +405,7 @@ ulysses/
 │   ├── __init__.py
 │   ├── scout.py          # Email/RSS watcher + parser
 │   ├── scorer.py         # Job scoring engine
+│   ├── narrator.py       # Short, voiced explanation of a score (LLM-powered)
 │   ├── notifier.py       # Telegram bot sender
 │   ├── proposal.py       # Proposal drafter (LLM-powered)
 │   └── prototype.py      # Demo script generator (LLM-powered)
@@ -539,16 +570,19 @@ Native macOS menu bar app with LaunchAgent auto-start.
 
 ### Phase 5 — Built-in Chat REPL
 `ulysses chat` opens an interactive terminal session: paste a job listing
-copied straight from the Upwork website (no email required), and it's
-extracted into a structured job via LLM (since real notification emails have
-a stable HTML structure to key off of, but a manual paste doesn't), scored,
-persisted to the same database scout-ingested jobs use, then — unless the
-Scorer Agent's recommendation is `SKIP` — drafted and prototyped exactly like
-`ulysses go`. A `SKIP`-recommended job is persisted and its score summary is
-shown, but proposal/prototype generation is skipped entirely (a one-line note
-says so); use `ulysses draft`/`build`/`go <url>` afterward to force it anyway
-if you disagree with the recommendation. Results print to the terminal and
-save to `./output/<job_id>/`; the loop continues for the next paste until you quit.
+copied straight from the Upwork website (no email required, no length limit
+on the paste), and it's extracted into a structured job via LLM (since real
+notification emails have a stable HTML structure to key off of, but a manual
+paste doesn't), scored, persisted to the same database scout-ingested jobs
+use. The Narrator Agent then explains the verdict in a short line, then —
+unless the Scorer Agent's recommendation is `SKIP` — the job is drafted and
+prototyped exactly like `ulysses go`. A `SKIP`-recommended job still gets the
+score table and Narrator blurb (arguably where the explanation matters most,
+since no proposal follows to speak for itself), but proposal/prototype
+generation is skipped entirely; use `ulysses draft`/`build`/`go <url>`
+afterward to force it anyway if you disagree with the recommendation. Results
+print to the terminal and save to `./output/<job_id>/`; the loop continues
+for the next paste until you quit.
 This bypasses the LangGraph pipeline's Telegram-oriented interrupt/resume
 step entirely — the same way the real production Telegram flow already does
 after a button press — rather than building on that mechanism's unused,

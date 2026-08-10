@@ -18,6 +18,7 @@ from rich.table import Table
 from telegram.error import InvalidToken, NetworkError, RetryAfter
 from telegram.ext import Application
 
+from ulysses.agents.narrator import NarratorAgent
 from ulysses.agents.notifier import InstantAlertHook, NotifierAgent
 from ulysses.agents.proposal import ProposalAgent, render_milestones_block
 from ulysses.agents.prototype import PrototypeAgent, build_prototype_zip
@@ -522,11 +523,21 @@ async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) ->
     )
     _print_score_summary(job, score)
 
+    try:
+        with console.status("[bold cyan]Thinking it over...[/bold cyan]"):
+            blurb = await NarratorAgent().narrate(job, score, profile)
+        console.print(f"[dim]{blurb}[/dim]\n")
+    except Exception:
+        # Narration is a nice-to-have on top of the score table already shown --
+        # never let it block drafting/building a genuinely good job.
+        logger.bind(job_id=job.id, agent="narrator").exception(
+            "Narration failed; continuing without it"
+        )
+
     if score.recommendation is Recommendation.SKIP:
         console.print(
-            "[yellow]Recommendation: SKIP — not drafting a proposal or building a demo "
-            "for this one. Use `ulysses draft`/`build`/`go <url>` if you want them "
-            "anyway.[/yellow]\n"
+            "[yellow]Not drafting a proposal or building a demo for this one. Use "
+            "`ulysses draft`/`build`/`go <url>` if you want them anyway.[/yellow]\n"
         )
         return
 

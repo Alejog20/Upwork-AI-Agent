@@ -7,13 +7,15 @@ Telegram with one-tap actions to draft a proposal or build a demo prototype.
 See `ULYSSES-ARQUITECHTURE.md` for the full system design and `CLAUDE.md` for
 project development standards.
 
-Current status: **Phase 6** — all five agents are live, the CLI is complete
-(`start`, `status`, `draft`, `build`, `go`, `chat`, `queue`, `archive`, `won`,
-`lost`, `analytics`, `config`, `install`/`uninstall`), there's a native macOS
-menu bar app with LaunchAgent auto-start, `ulysses chat` lets you paste a job
-listing straight from the Upwork website and run it through the whole
-pipeline without waiting on email, and `ulysses won`/`ulysses lost` feed a
-win-rate analytics dashboard (`ulysses analytics`) that surfaces data-driven
+Current status: **Phase 6** — all six agents are live (including a Narrator
+Agent that explains each score in plain language instead of just a number),
+the CLI is complete (`start`, `status`, `draft`, `build`, `go`, `chat`,
+`queue`, `archive`, `won`, `lost`, `analytics`, `config`,
+`install`/`uninstall`), there's a native macOS menu bar app with LaunchAgent
+auto-start, `ulysses chat` lets you paste a job listing straight from the
+Upwork website (no length limit) and run it through the whole pipeline
+without waiting on email, and `ulysses won`/`ulysses lost` feed a win-rate
+analytics dashboard (`ulysses analytics`) that surfaces data-driven
 scoring-weight suggestions — never applied automatically, always reviewed by
 you first.
 
@@ -113,13 +115,15 @@ whole pipeline, right in the terminal:
 uv run ulysses chat
 ```
 
-Paste the listing text, then type `SUBMITJOB` and press Enter to submit it
-(or press **Ctrl+D**, if your terminal doesn't intercept it for something
-else — several GUI terminal apps do). Ulysses scores it, then drafts a
-proposal and builds a demo — same as `go` — for a job copied straight from
-the Upwork website. If the score comes back recommending **SKIP**, it stops
-there instead: no proposal, no prototype, just a note telling you so (you can
-still force it with `ulysses draft`/`build`/`go <url>` if you want them
+Paste the listing text — there's no length limit, paste the whole page if you
+need to — then type `SUBMITJOB` and press Enter to submit it (or press
+**Ctrl+D**, if your terminal doesn't intercept it for something else —
+several GUI terminal apps do). Ulysses scores it, then tells you *why* in a
+short line in its own voice (not just a bare number) before deciding what to
+do next: drafts a proposal and builds a demo — same as `go` — for a job
+copied straight from the Upwork website, or, if the score comes back
+recommending **SKIP**, stops there instead with no proposal or prototype (you
+can still force it with `ulysses draft`/`build`/`go <url>` if you want them
 anyway). Type `quit` (or press Ctrl+D with nothing typed) to leave, or paste
 another listing to keep going.
 
