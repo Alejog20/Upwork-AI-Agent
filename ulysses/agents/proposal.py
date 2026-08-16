@@ -30,7 +30,6 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from ulysses.config.profile import Profile
-from ulysses.config.settings import get_settings
 from ulysses.models import BudgetType, GeneratedProposal, JobPost, JobScore, Milestone
 from ulysses.tools.example_retrieval import (
     ExampleProposal,
@@ -441,7 +440,9 @@ class ProposalAgent:
         llm_output: _ProposalLLMOutput = await ainvoke_with_retry(structured_llm, prompt)
         elapsed = time.monotonic() - start
         logger.bind(job_id=job.id, agent="proposal").info(
-            "LLM call complete: model={} latency={:.2f}s", get_settings().llm_model, elapsed
+            "LLM call complete: model={} latency={:.2f}s",
+            getattr(self._llm, "model_name", "unknown"),
+            elapsed,
         )
 
         hook, plan_bullets, close = _fit_content_to_budget(

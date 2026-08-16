@@ -22,7 +22,6 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from ulysses.config.profile import Profile
-from ulysses.config.settings import get_settings
 from ulysses.models import GeneratedPrototype, JobPost, JobScore
 from ulysses.tools.llm import ainvoke_with_retry, get_llm
 
@@ -196,7 +195,9 @@ class PrototypeAgent:
         llm_output: _PrototypeLLMOutput = await ainvoke_with_retry(structured_llm, prompt)
         elapsed = time.monotonic() - start
         logger.bind(job_id=job.id, agent="prototype").info(
-            "LLM call complete: model={} latency={:.2f}s", get_settings().llm_model, elapsed
+            "LLM call complete: model={} latency={:.2f}s",
+            getattr(self._llm, "model_name", "unknown"),
+            elapsed,
         )
 
         demo_script = _validate_script(llm_output.demo_script.strip(), job.id)
