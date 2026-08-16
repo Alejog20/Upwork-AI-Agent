@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     llm_base_url: str | None = None
 
+    # Embeddings for example-proposal retrieval (see `ulysses.tools.llm.aembed_texts`).
+    # Calls Gemini's native embedContent endpoint directly -- Gemini's OpenAI-
+    # compatible endpoint (what `llm_base_url` points ChatOpenAI at) does not
+    # support embeddings at all (confirmed: HTTP 501 UNIMPLEMENTED regardless of
+    # model name). This only works with a Gemini API key; swap the embedding
+    # client if this project ever moves to a different embeddings provider.
+    llm_embedding_model: str = "gemini-embedding-001"
+
     # Paths
     ulysses_home: Path = Path.home() / ".ulysses"
     profile_path: Path = Path(__file__).resolve().parent / "profile.yaml"

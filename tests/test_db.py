@@ -176,6 +176,62 @@ class TestGetFullJob:
         assert await db.get_full_job("job-1") is None
 
 
+class TestOutcomes:
+    async def test_record_outcome_inserts_and_updates_job_status_to_won(
+        self, db: UlyssesDB
+    ) -> None:
+        await db.upsert_job(_job())
+        outcome = await db.record_outcome(
+            "job-1", won=True, contract_value_usd=500.0, note="great client"
+        )
+
+        assert outcome.won is True
+        assert outcome.contract_value_usd == 500.0
+        assert outcome.note == "great client"
+        job = await db.get_job("job-1")
+        assert job.status == JobStatus.WON
+
+    async def test_record_outcome_updates_job_status_to_lost(self, db: UlyssesDB) -> None:
+        await db.upsert_job(_job())
+        await db.record_outcome("job-1", won=False, note="went with someone else")
+
+        job = await db.get_job("job-1")
+        assert job.status == JobStatus.LOST
+
+    async def test_record_outcome_upserts_on_repeat_call(self, db: UlyssesDB) -> None:
+        await db.upsert_job(_job())
+        await db.record_outcome("job-1", won=False, note="first guess")
+        await db.record_outcome("job-1", won=True, contract_value_usd=300.0, note="actually won")
+
+        outcomes = await db.list_outcomes()
+        assert len(outcomes) == 1
+        assert outcomes[0].won is True
+        assert outcomes[0].contract_value_usd == 300.0
+        assert outcomes[0].note == "actually won"
+
+    async def test_list_outcomes_most_recent_first(self, db: UlyssesDB) -> None:
+        await db.upsert_job(_job("a"))
+        await db.upsert_job(_job("b"))
+        await db.record_outcome("a", won=True)
+        await db.record_outcome("b", won=False)
+
+        outcomes = await db.list_outcomes()
+        assert [outcome.job_id for outcome in outcomes] == ["b", "a"]
+
+    async def test_list_jobs_with_outcomes_only_includes_resolved_jobs(self, db: UlyssesDB) -> None:
+        await db.upsert_job(_job("a", title="Job A"))
+        await db.upsert_job(_job("b", title="Job B"))
+        await db.record_outcome("a", won=True)
+        # "b" has no recorded outcome yet -- must not appear.
+
+        pairs = await db.list_jobs_with_outcomes()
+
+        assert len(pairs) == 1
+        job, outcome = pairs[0]
+        assert job.title == "Job A"
+        assert outcome.won is True
+
+
 class TestStats:
     async def test_counts_by_status_and_total(self, db: UlyssesDB) -> None:
         await db.upsert_job(_job("a", status=JobStatus.NEW))

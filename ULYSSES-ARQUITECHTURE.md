@@ -5,7 +5,7 @@
 
 ## System Overview
 
-Ulysses is an orchestrated pipeline of 5 specialized agents that work together: one watches for gigs, one scores them, one notifies you, one writes proposals, and one builds demo prototypes. You interact entirely through Telegram inline buttons or the Python CLI.
+Ulysses is an orchestrated pipeline of 6 specialized agents that work together: one watches for gigs, one scores them, one explains the verdict in plain language, one notifies you, one writes proposals, and one builds demo prototypes. You interact entirely through Telegram inline buttons or the Python CLI.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -81,6 +81,13 @@ score = (
 )
 ```
 
+The point values above are the *defaults* (`config.profile.ScoringWeights`), not
+hardcoded constants — tune any of them via `ulysses config set
+scoring.weights.<field> <value>`, informed by `ulysses analytics`'s
+scoring-weight suggestions (Phase 6). `agents.scorer.score_job` reads them from
+`profile.scoring.weights` on every call, so a weight change takes effect
+immediately with no code change or restart.
+
 **Also outputs:**
 - `matched_repos`: which of your GitHub projects best match this job
 - `gig_category`: Tier 1 / Tier 2 / Tier 3 (from the strategy doc)
@@ -101,7 +108,37 @@ RED_FLAGS = [
 
 ---
 
-### 3. Notifier Agent (Telegram Bot)
+### 3. Narrator Agent
+**Responsibility:** Explain a job's scoring verdict in one or two sentences, in Ulysses' own
+voice — the *why* behind the numbers, not another readout of them. Used today in `ulysses chat`,
+printed right after the score table for every job (APPLY_NOW/REVIEW/SKIP alike), including jobs
+that get skipped — that's exactly the case that most needs a reason, since no proposal follows to
+speak for itself.
+
+**Input:** The job + its full `JobScore` breakdown + the freelancer's profile (for skill-overlap
+context).
+
+**Output:** A short, grounded blurb — never a bare label like "Recommendation: SKIP":
+```
+New client, posted 9 minutes ago, and your scraper repo is a direct match. I'd apply now.
+```
+```
+Stale posting with 20+ proposals already in -- you'd be shouting into a crowd. I'd skip this.
+```
+
+**Generation rules:**
+- Grounded strictly in the actual computed facts (posting age, proposal count, client history,
+  skill overlap, budget, red flags) — never invents a reason that isn't in the data
+- References at most 2 of the most decisive factors, not an exhaustive readout
+- One cheap, fast LLM call per job (small `max_tokens`, no structured proposal-length output) —
+  a small fraction of the cost a full proposal/prototype generation would be, so it's still worth
+  running even for a job about to be skipped
+- Degrades gracefully: if the call fails for any reason, drafting/building proceeds without a
+  blurb rather than blocking on what's a nice-to-have
+
+---
+
+### 4. Notifier Agent (Telegram Bot)
 **Responsibility:** Format and send scored jobs to you via Telegram with inline action buttons.
 
 **Message format:**
@@ -137,7 +174,7 @@ RED_FLAGS = [
 
 ---
 
-### 4. Proposal Agent
+### 5. Proposal Agent
 **Responsibility:** Draft a complete, Spartan-style Upwork cover letter tailored to the specific job.
 
 **Input:** Job description + Scorer output (matched repos, category, red flags)
@@ -184,6 +221,12 @@ from the cover-letter proposal.
   the completion itself is capped via `max_tokens`, to keep quality high without
   wasting tokens. A moderately high sampling temperature is used to avoid the flat,
   repetitive phrasing that reads as AI-generated
+- Before drafting, `tools/example_retrieval.py` embeds the real job and every
+  curated example in `config/example_proposals.yaml`, then shows the single
+  closest match (by cosine similarity) to the LLM as a genuine few-shot
+  user/assistant turn pair — JSON-shaped to mirror the structured-output schema,
+  not free prose — before the real job's turn. Degrades gracefully (drafts with
+  no example) if retrieval fails or the corpus is empty; never blocks generation
 
 **Example output for a scraping job:**
 ```
@@ -212,7 +255,7 @@ Suggested milestones:
 
 ---
 
-### 5. Prototype Agent
+### 6. Prototype Agent
 **Responsibility:** Generate a demo Python script + README that proves you can do the job, before you're hired.
 
 **Input:** Job description + Scorer output
@@ -330,12 +373,20 @@ ulysses queue --min-score 70 --category tier1
 # Mark a job as archived
 ulysses archive <job_id>
 
+# Record the final outcome once you hear back from a client -- feeds `ulysses analytics`
+ulysses won <job_id> --value 500 --note "great client"
+ulysses lost <job_id> --note "went with someone else"
+
+# Show win-rate breakdowns and scoring-weight suggestions from recorded outcomes
+ulysses analytics
+
 # View your current profile.yaml
 ulysses config show
 
 # Update a single profile.yaml field by its dotted key
 ulysses config set freelancer.rate_usd_hr 25
 ulysses config set skills.primary "python,fastapi,scraping,automation"
+ulysses config set scoring.weights.freshness_under_15_min 25
 
 # Install/remove a macOS LaunchAgent so `ulysses start` runs automatically on login
 ulysses install
@@ -354,6 +405,7 @@ ulysses/
 │   ├── __init__.py
 │   ├── scout.py          # Email/RSS watcher + parser
 │   ├── scorer.py         # Job scoring engine
+│   ├── narrator.py       # Short, voiced explanation of a score (LLM-powered)
 │   ├── notifier.py       # Telegram bot sender
 │   ├── proposal.py       # Proposal drafter (LLM-powered)
 │   └── prototype.py      # Demo script generator (LLM-powered)
@@ -366,11 +418,13 @@ ulysses/
 │   └── graph.py          # LangGraph StateGraph assembly
 │
 ├── tools/
-│   ├── email_reader.py   # IMAP connection + email parsing
-│   ├── job_parser.py     # Extracts structured JobPost from raw email
-│   ├── db.py             # SQLite — seen jobs, archives, scores
-│   ├── github_mapper.py  # Maps job skills → your repos
-│   └── red_flag.py       # NLP pattern detector
+│   ├── email_reader.py       # IMAP connection + email parsing
+│   ├── job_parser.py         # Extracts structured JobPost from raw email
+│   ├── db.py                 # SQLite — seen jobs, archives, scores, outcomes
+│   ├── analytics.py          # Win-rate breakdowns + scoring-weight suggestions (Phase 6)
+│   ├── example_retrieval.py  # Semantic retrieval of curated example proposals
+│   ├── github_mapper.py      # Maps job skills → your repos
+│   └── red_flag.py           # NLP pattern detector
 │
 ├── templates/
 │   ├── proposals/
@@ -391,8 +445,9 @@ ulysses/
 │   └── main.py           # Typer-based CLI entry point
 │
 ├── config/
-│   ├── settings.py       # Pydantic Settings (loads from .env)
-│   └── profile.yaml      # Your skills, repos, rate, preferences
+│   ├── settings.py             # Pydantic Settings (loads from .env)
+│   ├── profile.yaml            # Your skills, repos, rate, preferences
+│   └── example_proposals.yaml  # Curated example proposals for few-shot retrieval
 │
 ├── tests/
 │   ├── test_scorer.py
@@ -515,12 +570,19 @@ Native macOS menu bar app with LaunchAgent auto-start.
 
 ### Phase 5 — Built-in Chat REPL
 `ulysses chat` opens an interactive terminal session: paste a job listing
-copied straight from the Upwork website (no email required), and it's
-extracted into a structured job via LLM (since real notification emails have
-a stable HTML structure to key off of, but a manual paste doesn't), scored,
-persisted to the same database scout-ingested jobs use, then drafted and
-prototyped exactly like `ulysses go`. Results print to the terminal and save
-to `./output/<job_id>/`; the loop continues for the next paste until you quit.
+copied straight from the Upwork website (no email required, no length limit
+on the paste), and it's extracted into a structured job via LLM (since real
+notification emails have a stable HTML structure to key off of, but a manual
+paste doesn't), scored, persisted to the same database scout-ingested jobs
+use. The Narrator Agent then explains the verdict in a short line, then —
+unless the Scorer Agent's recommendation is `SKIP` — the job is drafted and
+prototyped exactly like `ulysses go`. A `SKIP`-recommended job still gets the
+score table and Narrator blurb (arguably where the explanation matters most,
+since no proposal follows to speak for itself), but proposal/prototype
+generation is skipped entirely; use `ulysses draft`/`build`/`go <url>`
+afterward to force it anyway if you disagree with the recommendation. Results
+print to the terminal and save to `./output/<job_id>/`; the loop continues
+for the next paste until you quit.
 This bypasses the LangGraph pipeline's Telegram-oriented interrupt/resume
 step entirely — the same way the real production Telegram flow already does
 after a button press — rather than building on that mechanism's unused,
@@ -535,7 +597,26 @@ in, one job out — so it gets its own extraction, scoring, drafting, and
 prototyping pass, and a bad paste partway through the batch doesn't stop the
 rest from being processed.
 
-### Phase 6 — Intelligence Upgrades (Ongoing)
-- Fine-tune scoring weights based on your actual win rate
-- Add "what worked" feedback loop: when you get a contract, log which job score/category it was
-- A/B test proposal hooks over time
+### Phase 6 — Intelligence Upgrades
+`ulysses won <job_id>`/`ulysses lost <job_id>` record the final outcome for a
+job (contract value and a free-text note, for wins), which also updates its
+status to `WON`/`LOST`. `ulysses analytics` (backed by `tools/analytics.py`,
+pure functions over `(Job, Outcome)` pairs — no LLM calls) reports:
+- Win rate by tier category, by 25-point score bucket, and by red-flag
+  presence
+- Average total score for won jobs vs. lost jobs
+- Scoring-weight suggestions: which score component (freshness, proposal
+  count, client history, skill match, budget match) shows the widest gap
+  between won and lost jobs, once there are at least 5 of each with a
+  recoverable score breakdown. **Never applied automatically** — surfaced as
+  data to review and act on manually via `ulysses config set
+  scoring.weights.<field> <value>`, per AGENTS.md's "never override a score
+  without logging why."
+
+Scoring weights themselves moved from hardcoded constants in `scorer.py` into
+`profile.scoring.weights` (`config.profile.ScoringWeights`), so tuning them
+based on the above no longer requires a code change.
+
+Not yet built: A/B testing proposal hooks over time (deferred until there's
+enough won/lost proposal history to make pattern-tagging meaningful, rather
+than inventing an untested taxonomy up front).

@@ -1,0 +1,108 @@
+# Curated "gold standard" example proposals, used by the Proposal Agent as
+# few-shot examples via semantic retrieval (see tools/example_retrieval.py).
+# Each entry is a stand-in job + the ideal response to it, decomposed into the
+# same fields the LLM must produce (hook/plan_bullet_1-3/close/milestones), so
+# the few-shot example mirrors the exact structured-output shape being asked
+# for. Add more entries any time -- there's no fixed limit per category.
+
+- job_title: "Scrape real estate listings nightly, export clean CSV, dedup required"
+  job_description: >-
+    We need a Python developer to scrape real estate listings from a public site
+    every night and export clean rows to CSV. Must dedupe against previous runs
+    so re-runs never create duplicate entries. Budget $150 fixed, posted 10
+    minutes ago, 0 hires, payment verified.
+  skills: [python, web scraping, csv]
+  category: scraping
+  proof_repo: Multiple_source_scraper
+  proof_repo_url: https://github.com/Alejog20/Multiple_source_scraper
+  hook: >-
+    Losing hours to duplicate listings creeping into your CSV every night is
+    exactly the kind of thing automation should have solved already.
+  plan_bullet_1: Build a nightly scraper for the listing site, using Playwright for anything JS-rendered.
+  plan_bullet_2: Deduplicate against previous runs by listing ID before writing new rows.
+  plan_bullet_3: Schedule it via cron so it just runs -- no manual trigger needed.
+  close: >-
+    Happy to answer anything before we start -- do you already have the site's
+    listing-page URL pattern figured out, or should I scope that first?
+  milestones: []
+
+- job_title: "Automate invoice generation from Excel spreadsheets into branded PDFs"
+  job_description: >-
+    Need a script that reads monthly Excel invoice data and generates branded
+    PDF invoices automatically, then emails them to clients. Budget $200 fixed.
+  skills: [python, excel, pdf, automation]
+  category: automation
+  proof_repo: download-autoprocessor
+  proof_repo_url: https://github.com/Alejog20/download-autoprocessor
+  hook: >-
+    Manually turning your Excel rows into invoices every month is the kind of
+    task that should already run itself while you do something better with
+    your time.
+  plan_bullet_1: Read invoice line items straight from your Excel sheet with openpyxl.
+  plan_bullet_2: Generate branded PDF invoices using your template, one per client automatically.
+  plan_bullet_3: Send each PDF by email on a schedule, with a log of what went out and when.
+  close: >-
+    Happy to walk through your current invoice template before we start --
+    does it already have a fixed layout, or does it vary by client?
+  milestones: []
+
+- job_title: "Integrate our order system with a shipping carrier's REST API"
+  job_description: >-
+    We need our internal order system connected to a shipping carrier's API so
+    tracking numbers and delivery status update automatically. Budget $350 fixed.
+  skills: [python, rest api, fastapi, webhook]
+  category: api_dev
+  proof_repo: Extract_Reddit_comments_bot
+  proof_repo_url: https://github.com/Alejog20/Extract_Reddit_comments_bot
+  hook: >-
+    Manually copying tracking numbers between your order system and the
+    carrier's dashboard is exactly the kind of gap that quietly causes
+    late-shipment complaints.
+  plan_bullet_1: Connect to the carrier's REST API and pull tracking updates on a schedule.
+  plan_bullet_2: Push status changes into your order system via a webhook, so it updates automatically.
+  plan_bullet_3: Add retries and clear error logging so a dropped API call never goes unnoticed.
+  close: >-
+    Happy to confirm which carrier endpoints you're already authorized for
+    before we start -- do you have API credentials set up yet, or should that
+    be part of this?
+  milestones: []
+
+- job_title: "Clean and merge sales data from three different spreadsheet sources into one reporting sheet"
+  job_description: >-
+    We get sales data from three different tools, all as spreadsheets, and need
+    it merged and cleaned into one consistent reporting sheet every week.
+    Budget $250 fixed.
+  skills: [python, pandas, excel, reporting]
+  category: data_pipeline
+  proof_repo: Invoice_generator_from_xlsx
+  proof_repo_url: https://github.com/Alejog20/Invoice_generator_from_xlsx
+  hook: >-
+    Reconciling three spreadsheets by hand every week means small formatting
+    mismatches are probably already slipping into your numbers without anyone
+    noticing.
+  plan_bullet_1: Pull data from all three spreadsheet formats with pandas, standardizing column names and types.
+  plan_bullet_2: Merge and dedupe rows, flagging anything that doesn't reconcile for a quick manual check.
+  plan_bullet_3: Output one clean weekly reporting sheet in the exact layout you already use.
+  close: >-
+    Happy to look at a sample from each of the three sources before we start --
+    could you send one from each?
+  milestones: []
+
+- job_title: "Build a chatbot that answers customer questions from our product docs"
+  job_description: >-
+    We want a chatbot on our site that answers customer questions using our
+    existing product documentation, not generic answers. Budget $400 fixed.
+  skills: [python, openai api, langchain, chatbot]
+  category: ai_integration
+  proof_repo: Second Brain Obsidian
+  proof_repo_url: https://github.com/Alejog20/second_brain_obsidian
+  hook: >-
+    Customers bouncing off your site after a generic chatbot answer is a
+    conversion problem hiding as a support problem.
+  plan_bullet_1: Index your product docs so answers are grounded in your actual content, not the model's guesses.
+  plan_bullet_2: Wire up retrieval so the chatbot pulls the right doc section before answering.
+  plan_bullet_3: Add cost controls and fallbacks so a bad query never turns into a runaway API bill.
+  close: >-
+    Happy to take a look at your docs' current format before we start -- are
+    they in Markdown, a help center export, or something else?
+  milestones: []

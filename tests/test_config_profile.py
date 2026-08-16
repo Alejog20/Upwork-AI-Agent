@@ -51,6 +51,27 @@ class TestSetProfileValue:
             set_profile_value(profile, "repos", "x")
 
 
+class TestScoringWeights:
+    def test_defaults_match_the_architecture_doc_weighting(self, profile: Profile) -> None:
+        weights = profile.scoring.weights
+        assert weights.freshness_under_15_min == 30.0
+        assert weights.proposals_under_5 == 25.0
+        assert weights.client_no_hires == 20.0
+        assert weights.skill_match_max_points == 15.0
+        assert weights.budget_match_max_points == 10.0
+
+    def test_settable_via_three_level_dotted_key(self, profile: Profile) -> None:
+        updated = set_profile_value(profile, "scoring.weights.freshness_under_15_min", "40")
+        assert updated.scoring.weights.freshness_under_15_min == 40.0
+        assert profile.scoring.weights.freshness_under_15_min == 30.0  # original untouched
+
+    def test_bundled_profile_yaml_loads_with_default_weights(self) -> None:
+        # The shipped profile.yaml doesn't declare a `weights:` block -- confirms
+        # ScoringWeights' Pydantic defaults populate it without a config change.
+        loaded = load_profile()
+        assert loaded.scoring.weights.freshness_under_15_min == 30.0
+
+
 class TestSaveAndReloadProfile:
     def test_round_trips_through_disk(self, profile: Profile, tmp_path: Path) -> None:
         path = tmp_path / "profile.yaml"

@@ -28,6 +28,7 @@ from ulysses.models import JobPost, JobScore
 __all__ = [
     "Job",
     "JobStatus",
+    "Outcome",
     "ProposalDraft",
     "PrototypeFile",
     "UlyssesDB",
@@ -81,6 +82,17 @@ class PrototypeFile(SQLModel, table=True):
     filename: str
     content: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class Outcome(SQLModel, table=True):
+    """The final won/lost result for a job, used for win-rate analytics (Phase 6)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    job_id: str = Field(foreign_key="job.id", index=True, unique=True)
+    won: bool
+    contract_value_usd: float | None = None
+    note: str | None = None
+    closed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class UlyssesDB:
@@ -200,6 +212,59 @@ class UlyssesDB:
             job.status = status
             session.add(job)
             await session.commit()
+
+    async def record_outcome(
+        self,
+        job_id: str,
+        *,
+        won: bool,
+        contract_value_usd: float | None = None,
+        note: str | None = None,
+    ) -> Outcome:
+        """Record the final won/lost outcome for a job, upserting if one already exists.
+
+        Also updates the job's lifecycle status to `WON`/`LOST`, so `ulysses queue`/
+        `status` reflect the outcome immediately.
+        """
+        async with self.session() as session:
+            result = await session.exec(select(Outcome).where(Outcome.job_id == job_id))
+            existing = result.first()
+            if existing is not None:
+                existing.won = won
+                existing.contract_value_usd = contract_value_usd
+                existing.note = note
+                existing.closed_at = datetime.now(UTC)
+                session.add(existing)
+                await session.commit()
+                await session.refresh(existing)
+                outcome = existing
+            else:
+                outcome = Outcome(
+                    job_id=job_id, won=won, contract_value_usd=contract_value_usd, note=note
+                )
+                session.add(outcome)
+                await session.commit()
+                await session.refresh(outcome)
+
+        await self.update_status(job_id, JobStatus.WON if won else JobStatus.LOST)
+        return outcome
+
+    async def list_outcomes(self) -> list[Outcome]:
+        """List every recorded outcome, most recently closed first."""
+        async with self.session() as session:
+            result = await session.exec(select(Outcome).order_by(Outcome.closed_at.desc()))
+            return list(result.all())
+
+    async def list_jobs_with_outcomes(self) -> list[tuple[Job, Outcome]]:
+        """List every job that has a recorded outcome, paired with that outcome.
+
+        Used by `tools.analytics` to correlate scores/categories/red flags with
+        actual won/lost results.
+        """
+        async with self.session() as session:
+            query = select(Job, Outcome).join(Outcome, Job.id == Outcome.job_id)
+            result = await session.exec(query)
+            return list(result.all())
 
     async def add_proposal_draft(self, job_id: str, content: str) -> ProposalDraft:
         """Persist a generated proposal draft for a job."""

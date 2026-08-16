@@ -7,12 +7,17 @@ Telegram with one-tap actions to draft a proposal or build a demo prototype.
 See `ULYSSES-ARQUITECHTURE.md` for the full system design and `CLAUDE.md` for
 project development standards.
 
-Current status: **Phase 5** — all five agents are live, the CLI is complete
-(`start`, `status`, `draft`, `build`, `go`, `chat`, `queue`, `archive`,
-`config`, `install`/`uninstall`), there's a native macOS menu bar app with
-LaunchAgent auto-start, and `ulysses chat` lets you paste a job listing
-straight from the Upwork website and run it through the whole pipeline
-without waiting on email. Phase 6 (analytics/win-rate tuning) is next.
+Current status: **Phase 6** — all six agents are live (including a Narrator
+Agent that explains each score in plain language instead of just a number),
+the CLI is complete (`start`, `status`, `draft`, `build`, `go`, `chat`,
+`queue`, `archive`, `won`, `lost`, `analytics`, `config`,
+`install`/`uninstall`), there's a native macOS menu bar app with LaunchAgent
+auto-start, `ulysses chat` lets you paste a job listing straight from the
+Upwork website (no length limit) and run it through the whole pipeline
+without waiting on email, and `ulysses won`/`ulysses lost` feed a win-rate
+analytics dashboard (`ulysses analytics`) that surfaces data-driven
+scoring-weight suggestions — never applied automatically, always reviewed by
+you first.
 
 ## Requirements
 
@@ -110,12 +115,17 @@ whole pipeline, right in the terminal:
 uv run ulysses chat
 ```
 
-Paste the listing text, then type `SUBMITJOB` and press Enter to submit it
-(or press **Ctrl+D**, if your terminal doesn't intercept it for something
-else — several GUI terminal apps do). Ulysses scores it, drafts a proposal,
-and builds a demo — same as `go`, but for a job copied straight from the
-Upwork website. Type `quit` (or press Ctrl+D with nothing typed) to leave,
-or paste another listing to keep going.
+Paste the listing text — there's no length limit, paste the whole page if you
+need to — then type `SUBMITJOB` and press Enter to submit it (or press
+**Ctrl+D**, if your terminal doesn't intercept it for something else —
+several GUI terminal apps do). Ulysses scores it, then tells you *why* in a
+short line in its own voice (not just a bare number) before deciding what to
+do next: drafts a proposal and builds a demo — same as `go` — for a job
+copied straight from the Upwork website, or, if the score comes back
+recommending **SKIP**, stops there instead with no proposal or prototype (you
+can still force it with `ulysses draft`/`build`/`go <url>` if you want them
+anyway). Type `quit` (or press Ctrl+D with nothing typed) to leave, or paste
+another listing to keep going.
 
 Got several listings to process in one sitting? Paste one, type `NEXTJOB`
 and press Enter, paste the next, and repeat as many times as you like —
@@ -136,17 +146,50 @@ uv run ulysses queue --min-score 70 --category tier1
 uv run ulysses archive <job_id>
 ```
 
+Once you hear back from a client, record the outcome — this is what powers
+`ulysses analytics` (see below):
+
+```bash
+uv run ulysses won <job_id> --value 500 --note "great client"
+uv run ulysses lost <job_id> --note "went with someone else"
+```
+
+See win-rate breakdowns by category, score bucket, and red-flag presence,
+plus data-driven scoring-weight suggestions (never applied automatically —
+you decide whether to act on them):
+
+```bash
+uv run ulysses analytics
+```
+
 View or update your `profile.yaml` from the terminal:
 
 ```bash
 uv run ulysses config show
 uv run ulysses config set freelancer.rate_usd_hr 30
 uv run ulysses config set skills.primary "python,fastapi,scraping"
+uv run ulysses config set scoring.weights.freshness_under_15_min 25
 ```
 
 (Scalar fields are type-coerced automatically; comma-separated values are
 split into a list. Nested list-of-object fields like `repos` aren't settable
-this way — edit `profile.yaml` directly for those.)
+this way — edit `profile.yaml` directly for those. Scoring weights live under
+`scoring.weights.*` — see `ulysses config show` for every tunable field.)
+
+### Tuning proposal quality with example proposals
+
+`ulysses/config/example_proposals.yaml` holds a handful of hand-written
+"gold standard" example proposals. Before drafting, the Proposal Agent embeds
+the real job and every example, then shows the LLM the single closest match
+as a concrete demonstration of the desired tone and structure — a
+lightweight, no-fine-tuning way to steer quality. Add your own entries any
+time (each needs a stand-in job plus the ideal `hook`/`plan_bullet_1-3`/
+`close`/`milestones` response) — there's no fixed limit or one-per-category
+rule. This uses Gemini's native embeddings endpoint directly (a separate
+`ULYSSES_LLM_API_KEY`-authenticated call, not routed through
+`ULYSSES_LLM_BASE_URL`, since Gemini's OpenAI-compatible endpoint doesn't
+support embeddings); if retrieval fails for any reason, drafting proceeds
+without a few-shot example rather than failing the whole proposal.
 
 ## Running 24/7
 

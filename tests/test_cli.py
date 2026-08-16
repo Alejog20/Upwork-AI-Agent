@@ -10,7 +10,7 @@ plus the pure disk-writing helper used by `build`/`go`.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,16 +19,19 @@ from pytest_mock import MockerFixture
 from telegram.error import InvalidToken, NetworkError, TimedOut
 from typer.testing import CliRunner
 
+from ulysses.agents.scorer import score_job
 from ulysses.cli.main import (
+    _make_build_handler,
+    _make_draft_handler,
     _read_pasted_job_listings,
     _shutdown_telegram,
     _start_telegram_with_retry,
     _write_prototype_to_disk,
     app,
 )
-from ulysses.config.profile import DEFAULT_PROFILE_PATH, load_profile
+from ulysses.config.profile import DEFAULT_PROFILE_PATH, Profile, load_profile
 from ulysses.config.settings import get_settings
-from ulysses.models import BudgetRange, GeneratedPrototype, JobPost
+from ulysses.models import BudgetRange, BudgetType, GeneratedPrototype, JobPost, JobScore, Milestone
 from ulysses.tools.db import Job, JobStatus, UlyssesDB
 from ulysses.tools.manual_job import ManualJobParseError
 
@@ -171,6 +174,214 @@ async def _seed_job(db_path: Path, **overrides: object) -> None:
     await db.dispose()
 
 
+async def _seed_full_job(db_path: Path, job: JobPost, score: JobScore) -> None:
+    """Seed a job with `job_json`/`score_json` populated, as `_lookup_full_job` requires."""
+    await _seed_job(
+        db_path,
+        id=job.id,
+        title=job.title,
+        description=job.description,
+        url=job.url,
+        score=score.total_score,
+        category=score.gig_category.value,
+        posted_at=job.posted_at,
+        job_json=job.model_dump_json(),
+        score_json=score.model_dump_json(),
+    )
+
+
+class TestMakeDraftHandler:
+    """Unit tests for the Telegram "Draft Proposal" button's callback logic."""
+
+    async def test_drafts_and_sends_for_a_known_job(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=(fresh_job, score))
+        proposal_agent = AsyncMock()
+        proposal_agent.generate = AsyncMock(return_value=_mock_proposal())
+        notifier = AsyncMock()
+
+        handler = _make_draft_handler(db, proposal_agent, notifier, profile)
+        await handler(fresh_job.id)
+
+        proposal_agent.generate.assert_awaited_once_with(fresh_job, score, profile)
+        db.add_proposal_draft.assert_awaited_once_with(fresh_job.id, "Generated proposal text.")
+        notifier.send_proposal_draft.assert_awaited_once_with(
+            fresh_job.id, "Generated proposal text."
+        )
+
+    async def test_sends_error_message_for_a_job_predating_detailed_storage(self) -> None:
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=None)
+        proposal_agent = AsyncMock()
+        notifier = AsyncMock()
+
+        handler = _make_draft_handler(db, proposal_agent, notifier, MagicMock())
+        await handler("unknown-id")
+
+        notifier.send_error_message.assert_awaited_once()
+        proposal_agent.generate.assert_not_awaited()
+
+
+class TestMakeBuildHandler:
+    """Unit tests for the Telegram "Build Demo" button's callback logic."""
+
+    async def test_builds_and_sends_for_a_known_job(
+        self, fresh_job: JobPost, profile: Profile, mocker: MockerFixture
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=(fresh_job, score))
+        prototype_agent = AsyncMock()
+        prototype = _mock_prototype(fresh_job.id)
+        prototype_agent.generate = AsyncMock(return_value=prototype)
+        notifier = AsyncMock()
+        mocker.patch("ulysses.cli.main.build_prototype_zip", return_value=b"zip-bytes")
+
+        handler = _make_build_handler(db, prototype_agent, notifier, profile)
+        await handler(fresh_job.id)
+
+        prototype_agent.generate.assert_awaited_once_with(fresh_job, score, profile)
+        assert db.add_prototype_file.await_count == 4
+        notifier.send_prototype_zip.assert_awaited_once_with(fresh_job.id, prototype, b"zip-bytes")
+
+    async def test_sends_error_message_for_a_job_predating_detailed_storage(self) -> None:
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=None)
+        prototype_agent = AsyncMock()
+        notifier = AsyncMock()
+
+        handler = _make_build_handler(db, prototype_agent, notifier, MagicMock())
+        await handler("unknown-id")
+
+        notifier.send_error_message.assert_awaited_once()
+        prototype_agent.generate.assert_not_awaited()
+
+
+class TestDraftCommand:
+    def test_errors_for_unknown_url(self) -> None:
+        result = runner.invoke(app, ["draft", "https://www.upwork.com/jobs/~unknown"])
+
+        assert result.exit_code == 1
+        assert "No job found for URL" in result.stdout
+
+    def test_errors_for_job_predating_detailed_storage(self) -> None:
+        settings = get_settings()
+        url = "https://www.upwork.com/jobs/~job-1"
+        asyncio.run(_seed_job(settings.db_path, id="job-1", url=url))
+
+        result = runner.invoke(app, ["draft", url])
+
+        assert result.exit_code == 1
+        assert "predates detailed storage" in result.stdout
+
+    def test_drafts_a_proposal_for_a_known_job(
+        self, mocker: MockerFixture, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        settings = get_settings()
+        score = score_job(fresh_job, profile)
+        asyncio.run(_seed_full_job(settings.db_path, fresh_job, score))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+
+        result = runner.invoke(app, ["draft", fresh_job.url])
+
+        assert result.exit_code == 0
+        assert "Generated proposal text." in result.stdout
+
+    def test_prints_a_milestones_panel_when_present(
+        self, mocker: MockerFixture, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        settings = get_settings()
+        score = score_job(fresh_job, profile)
+        asyncio.run(_seed_full_job(settings.db_path, fresh_job, score))
+        proposal = _mock_proposal()
+        proposal.milestones = [Milestone(description="Set it up", amount_usd=100.0, days=2)]
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=proposal)),
+        )
+
+        result = runner.invoke(app, ["draft", fresh_job.url])
+
+        assert result.exit_code == 0
+        assert "Suggested Milestones" in result.stdout
+        assert "Set it up" in result.stdout
+
+
+class TestBuildCommand:
+    def test_errors_for_unknown_url(self) -> None:
+        result = runner.invoke(app, ["build", "https://www.upwork.com/jobs/~unknown"])
+
+        assert result.exit_code == 1
+        assert "No job found for URL" in result.stdout
+
+    def test_builds_a_prototype_for_a_known_job(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        fresh_job: JobPost,
+        profile: Profile,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        settings = get_settings()
+        score = score_job(fresh_job, profile)
+        asyncio.run(_seed_full_job(settings.db_path, fresh_job, score))
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(fresh_job.id))),
+        )
+
+        result = runner.invoke(app, ["build", fresh_job.url])
+
+        assert result.exit_code == 0
+        assert "# Demo" in result.stdout
+        assert (Path("output") / fresh_job.id / "demo.py").read_text() == "print('demo')"
+
+
+class TestGoCommand:
+    def test_errors_for_unknown_url(self) -> None:
+        result = runner.invoke(app, ["go", "https://www.upwork.com/jobs/~unknown"])
+
+        assert result.exit_code == 1
+        assert "No job found for URL" in result.stdout
+
+    def test_drafts_and_builds_for_a_known_job(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        fresh_job: JobPost,
+        profile: Profile,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        settings = get_settings()
+        score = score_job(fresh_job, profile)
+        asyncio.run(_seed_full_job(settings.db_path, fresh_job, score))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(fresh_job.id))),
+        )
+
+        result = runner.invoke(app, ["go", fresh_job.url])
+
+        assert result.exit_code == 0
+        assert "Generated proposal text." in result.stdout
+        assert "# Demo" in result.stdout
+        output_dir = Path("output") / fresh_job.id
+        assert output_dir.exists()
+        assert (output_dir / "proposal.txt").read_text() == "Generated proposal text."
+
+
 class TestStatusCommand:
     def test_shows_zero_counts_on_fresh_db(self) -> None:
         result = runner.invoke(app, ["status"])
@@ -220,6 +431,80 @@ class TestArchiveCommand:
             return job.status
 
         assert asyncio.run(_check_status()) == JobStatus.ARCHIVED
+
+
+class TestWonLostCommands:
+    def test_won_errors_for_unknown_job(self) -> None:
+        result = runner.invoke(app, ["won", "no-such-id"])
+        assert result.exit_code == 1
+        assert "No job found" in result.stdout
+
+    def test_won_marks_job_and_records_outcome(self) -> None:
+        settings = get_settings()
+        asyncio.run(_seed_job(settings.db_path, id="job-1", title="Some job"))
+
+        result = runner.invoke(app, ["won", "job-1", "--value", "500", "--note", "great client"])
+
+        assert result.exit_code == 0
+        assert "Won" in result.stdout
+
+        async def _check() -> tuple[JobStatus, float | None]:
+            db = UlyssesDB(settings.db_path)
+            await db.init()
+            job = await db.get_job("job-1")
+            outcomes = await db.list_outcomes()
+            await db.dispose()
+            assert job is not None
+            return job.status, outcomes[0].contract_value_usd
+
+        status, value = asyncio.run(_check())
+        assert status == JobStatus.WON
+        assert value == 500.0
+
+    def test_lost_errors_for_unknown_job(self) -> None:
+        result = runner.invoke(app, ["lost", "no-such-id"])
+        assert result.exit_code == 1
+        assert "No job found" in result.stdout
+
+    def test_lost_marks_job(self) -> None:
+        settings = get_settings()
+        asyncio.run(_seed_job(settings.db_path, id="job-1", title="Some job"))
+
+        result = runner.invoke(app, ["lost", "job-1", "--note", "went with someone else"])
+
+        assert result.exit_code == 0
+        assert "Lost" in result.stdout
+
+        async def _check_status() -> JobStatus:
+            db = UlyssesDB(settings.db_path)
+            await db.init()
+            job = await db.get_job("job-1")
+            await db.dispose()
+            assert job is not None
+            return job.status
+
+        assert asyncio.run(_check_status()) == JobStatus.LOST
+
+
+class TestAnalyticsCommand:
+    def test_shows_message_when_no_outcomes_recorded(self) -> None:
+        result = runner.invoke(app, ["analytics"])
+        assert result.exit_code == 0
+        assert "No outcomes recorded yet" in result.stdout
+
+    def test_shows_win_rate_breakdown_after_recording_outcomes(self) -> None:
+        settings = get_settings()
+        asyncio.run(_seed_job(settings.db_path, id="job-1", title="Won job", score=90.0))
+        asyncio.run(_seed_job(settings.db_path, id="job-2", title="Lost job", score=40.0))
+        runner.invoke(app, ["won", "job-1"])
+        runner.invoke(app, ["lost", "job-2"])
+
+        result = runner.invoke(app, ["analytics"])
+
+        assert result.exit_code == 0
+        assert "2 outcomes recorded" in result.stdout
+        assert "Win Rate by Category" in result.stdout
+        assert "Scoring weight suggestions" in result.stdout
 
 
 class TestConfigCommands:
@@ -283,6 +568,41 @@ class TestInstallUninstallCommands:
         assert "No LaunchAgent" in result.stdout
 
 
+class TestStartCommand:
+    """`start()` itself just wraps `run_forever` with top-level exception handling --
+    the actual scout/score/notify orchestration loop is exercised via its own
+    components (ScoutAgent, NotifierAgent, etc.), not simulated here."""
+
+    def test_keyboard_interrupt_exits_cleanly(self, mocker: MockerFixture) -> None:
+        mocker.patch("ulysses.cli.main.run_forever", new=AsyncMock(side_effect=KeyboardInterrupt()))
+
+        result = runner.invoke(app, ["start"])
+
+        assert result.exit_code == 0
+        assert "Ulysses stopped" in result.stdout
+
+    def test_invalid_token_exits_with_a_clean_error(self, mocker: MockerFixture) -> None:
+        mocker.patch(
+            "ulysses.cli.main.run_forever",
+            new=AsyncMock(side_effect=InvalidToken("bad token")),
+        )
+
+        result = runner.invoke(app, ["start"])
+
+        assert result.exit_code == 1
+        assert "Telegram rejected the bot token" in result.stdout
+
+    def test_unexpected_exception_exits_with_a_clean_error(self, mocker: MockerFixture) -> None:
+        mocker.patch(
+            "ulysses.cli.main.run_forever", new=AsyncMock(side_effect=RuntimeError("boom"))
+        )
+
+        result = runner.invoke(app, ["start"])
+
+        assert result.exit_code == 1
+        assert "Ulysses crashed" in result.stdout
+
+
 def _mock_pasted_job(**overrides: object) -> JobPost:
     defaults: dict[str, object] = {
         "id": "manual-job-1",
@@ -304,6 +624,9 @@ def _mock_proposal() -> MagicMock:
     proposal = MagicMock()
     proposal.full_text = "Generated proposal text."
     proposal.milestones = []
+    proposal.category = "scraping"
+    proposal.timeline = "3 days"
+    proposal.bid_usd = 200.0
     return proposal
 
 
@@ -315,6 +638,15 @@ def _mock_prototype(job_id: str) -> MagicMock:
     prototype.readme_md = "# Demo\n"
     prototype.config_example_env = "# none\n"
     return prototype
+
+
+def _mock_narrator_agent(mocker: MockerFixture, *blurbs: str) -> MagicMock:
+    """Patch `NarratorAgent` so chat tests never make a real LLM call for narration."""
+    texts = blurbs or ("A short verdict blurb.",)
+    return mocker.patch(
+        "ulysses.cli.main.NarratorAgent",
+        return_value=MagicMock(narrate=AsyncMock(side_effect=list(texts))),
+    )
 
 
 class TestChatCommand:
@@ -349,6 +681,7 @@ class TestChatCommand:
             "ulysses.cli.main.PrototypeAgent",
             return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
         )
+        _mock_narrator_agent(mocker)
 
         result = runner.invoke(app, ["chat"], input="Some pasted job text here.\n")
 
@@ -369,6 +702,61 @@ class TestChatCommand:
         stored_job = asyncio.run(_check())
         assert stored_job is not None
         assert stored_job.title == job.title
+
+    def test_narrator_failure_does_not_block_drafting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        job = _mock_pasted_job()
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=job))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
+        )
+        mocker.patch(
+            "ulysses.cli.main.NarratorAgent",
+            return_value=MagicMock(narrate=AsyncMock(side_effect=RuntimeError("boom"))),
+        )
+
+        result = runner.invoke(app, ["chat"], input="Some pasted job text here.\n")
+
+        assert result.exit_code == 0
+        assert "Generated proposal text." in result.stdout  # drafting still happened
+        assert "# Demo" in result.stdout
+
+    def test_skip_recommended_job_never_drafts_or_builds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        # Stale, saturated with proposals, an experienced client, no skill overlap,
+        # and a budget far outside the target range -- scores well below
+        # min_score_to_notify, so score_job recommends SKIP.
+        weak_job = _mock_pasted_job(
+            description="Simple task, shouldn't take long -- basic data entry.",
+            posted_at=datetime.now(UTC) - timedelta(hours=10),
+            proposals_count=50,
+            client_hires=10,
+            skills_required=["cobol"],
+            budget=BudgetRange(type=BudgetType.FIXED, min_amount=5000, max_amount=5000),
+        )
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=weak_job))
+        proposal_agent_mock = mocker.patch("ulysses.cli.main.ProposalAgent")
+        prototype_agent_mock = mocker.patch("ulysses.cli.main.PrototypeAgent")
+        _mock_narrator_agent(mocker, "I'd skip this one.")
+
+        result = runner.invoke(app, ["chat"], input="A weak job listing.\n")
+
+        assert result.exit_code == 0
+        assert "I'd skip this one." in result.stdout
+        assert "Not drafting a proposal" in result.stdout
+        assert "Generated proposal text." not in result.stdout
+        proposal_agent_mock.assert_not_called()
+        prototype_agent_mock.assert_not_called()
+        assert not (Path("output") / weak_job.id).exists()
 
     def test_extraction_failure_shows_friendly_error_and_continues_session(
         self, mocker: MockerFixture
@@ -410,6 +798,7 @@ class TestChatCommand:
                 generate=AsyncMock(side_effect=[_mock_prototype("job-1"), _mock_prototype("job-2")])
             ),
         )
+        _mock_narrator_agent(mocker, "Blurb one.", "Blurb two.")
 
         result = runner.invoke(
             app,
@@ -446,6 +835,7 @@ class TestChatCommand:
                 generate=AsyncMock(side_effect=[_mock_prototype("job-1"), _mock_prototype("job-2")])
             ),
         )
+        _mock_narrator_agent(mocker, "Blurb one.", "Blurb two.")
 
         result = runner.invoke(
             app,
@@ -458,6 +848,27 @@ class TestChatCommand:
         assert "Processing job 2 of 2" in result.stdout
         assert (Path("output") / "job-1").exists()
         assert (Path("output") / "job-2").exists()
+
+    def test_submitting_nothing_shows_a_nudge_and_continues(self) -> None:
+        result = runner.invoke(app, ["chat"], input="SUBMITJOB\nquit\n")
+
+        assert result.exit_code == 0
+        assert "Nothing pasted" in result.stdout
+        assert "Goodbye" in result.stdout
+
+    def test_unexpected_error_shows_friendly_message_and_continues_the_batch(
+        self, mocker: MockerFixture
+    ) -> None:
+        mocker.patch(
+            "ulysses.cli.main.extract_job_from_text",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        )
+
+        result = runner.invoke(app, ["chat"], input="a pasted job listing\n")
+
+        assert result.exit_code == 0
+        assert "Something went wrong processing that listing" in result.stdout
+        assert "Goodbye" in result.stdout
 
 
 class TestReadPastedJobListings:

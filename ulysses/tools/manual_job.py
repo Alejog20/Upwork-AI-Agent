@@ -21,7 +21,6 @@ from ulysses.tools.llm import ainvoke_with_retry, get_llm
 
 __all__ = ["ManualJobParseError", "extract_job_from_text"]
 
-_MAX_INPUT_CHARS = 60_000
 _MAX_OUTPUT_TOKENS = 900
 _MAX_DESCRIPTION_CHARS = 2_000
 _MIN_TITLE_CHARS = 3
@@ -112,9 +111,13 @@ async def extract_job_from_text(raw_text: str, *, llm: BaseChatModel | None = No
 
     Args:
         raw_text: The raw text the user pasted (may include extra page chrome).
-            Truncated to `_MAX_INPUT_CHARS` before being sent to the LLM --
-            generous on purpose, since this is the only thing that decides
-            what the LLM ever sees.
+            Sent to the LLM as-is, uncapped -- `ulysses chat` itself has no
+            paste-length limit either, so a large multi-page listing goes
+            through untruncated. The natural ceiling is the configured
+            model's own context window, not an artificial cap here; if a
+            paste is genuinely too large for that, the LLM call fails and
+            the caller (`_process_pasted_job`) reports it as a normal
+            per-listing error rather than crashing the session.
         llm: Chat model override, primarily for tests. Defaults to `get_llm()`.
 
     Returns:
@@ -141,12 +144,7 @@ async def extract_job_from_text(raw_text: str, *, llm: BaseChatModel | None = No
     )
     prompt = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": _USER_PROMPT_TEMPLATE.format(
-                raw_text=_truncate_at_word_boundary(stripped, _MAX_INPUT_CHARS)
-            ),
-        },
+        {"role": "user", "content": _USER_PROMPT_TEMPLATE.format(raw_text=stripped)},
     ]
     extraction: _ManualJobExtraction = await ainvoke_with_retry(structured_llm, prompt)
 
