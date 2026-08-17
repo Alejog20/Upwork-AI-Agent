@@ -536,8 +536,9 @@ async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) ->
 
     if score.recommendation is Recommendation.SKIP:
         console.print(
-            "[yellow]Not drafting a proposal or building a demo for this one. Use "
-            "`ulysses draft`/`build`/`go <url>` if you want them anyway.[/yellow]\n"
+            "[yellow]Not drafting a proposal or building a demo for this one. Run "
+            f"[cyan]ulysses draft {job.url}[/cyan] (or `build`/`go`) if you want them "
+            "anyway.[/yellow]\n"
         )
         return
 

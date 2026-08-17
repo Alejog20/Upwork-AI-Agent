@@ -753,6 +753,8 @@ class TestChatCommand:
         assert result.exit_code == 0
         assert "I'd skip this one." in result.stdout
         assert "Not drafting a proposal" in result.stdout
+        assert "ulysses draft" in result.stdout
+        assert weak_job.url in result.stdout
         assert "Generated proposal text." not in result.stdout
         proposal_agent_mock.assert_not_called()
         prototype_agent_mock.assert_not_called()
