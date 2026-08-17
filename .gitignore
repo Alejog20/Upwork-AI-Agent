@@ -19,5 +19,6 @@ output/
 htmlcov/
 
 # Local-only docs — never pushed, for privacy. AGENTS-sample.md is the public template.
+*.md
 CLAUDE.md
 AGENTS.md
