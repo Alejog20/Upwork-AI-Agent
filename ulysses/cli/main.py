@@ -18,6 +18,13 @@ from rich.table import Table
 from telegram.error import InvalidToken, NetworkError, RetryAfter
 from telegram.ext import Application
 
+from ulysses.agents.chat import (
+    CHAT_SYSTEM_PROMPT,
+    ChatAgent,
+    build_advisor_profile_summary,
+    build_job_context_message,
+    build_queue_digest,
+)
 from ulysses.agents.narrator import NarratorAgent
 from ulysses.agents.notifier import InstantAlertHook, NotifierAgent
 from ulysses.agents.proposal import ProposalAgent, render_milestones_block
@@ -33,7 +40,14 @@ from ulysses.config.profile import (
 )
 from ulysses.config.settings import Settings, get_settings
 from ulysses.graph.graph import build_graph
-from ulysses.models import GeneratedPrototype, JobPost, JobScore, Milestone, Recommendation
+from ulysses.models import (
+    GeneratedProposal,
+    GeneratedPrototype,
+    JobPost,
+    JobScore,
+    Milestone,
+    Recommendation,
+)
 from ulysses.tools.analytics import (
     average_score_won_vs_lost,
     scoring_weight_suggestions,
@@ -440,6 +454,7 @@ async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
 _CHAT_QUIT_COMMANDS = {"quit", "exit"}
 _CHAT_SUBMIT_SENTINEL = "SUBMITJOB"
 _CHAT_NEXT_JOB_SENTINEL = "NEXTJOB"
+_CHAT_FOLLOWUP_COMMAND = "/chat"
 
 
 @app.command()
@@ -456,19 +471,37 @@ async def _chat_async(settings: Settings, profile: Profile) -> None:
         f"Paste a listing, then either type [cyan]{_CHAT_NEXT_JOB_SENTINEL}[/cyan] and press "
         "Enter to queue another listing before submitting, or type "
         f"[cyan]{_CHAT_SUBMIT_SENTINEL}[/cyan] and press Enter to submit the batch (or press "
-        "[cyan]Ctrl+D[/cyan], if your terminal doesn't intercept it). "
+        "[cyan]Ctrl+D[/cyan], if your terminal doesn't intercept it). Afterwards, type "
+        f"[cyan]{_CHAT_FOLLOWUP_COMMAND}[/cyan] to talk about the job just processed before "
+        "pasting more. "
         f"Type [cyan]quit[/cyan]/[cyan]exit[/cyan] (or press Ctrl+D with nothing typed) to "
         "leave.\n"
     )
 
     db = UlyssesDB(settings.db_path)
     await db.init()
+    last_processed: (
+        tuple[JobPost, JobScore, GeneratedProposal | None, GeneratedPrototype | None] | None
+    ) = None
     try:
         while True:
             raw_texts = _read_pasted_job_listings()
             if raw_texts is None:
                 console.print("[yellow]Goodbye.[/yellow]")
                 return
+
+            if raw_texts == _CHAT_FOLLOWUP_COMMAND:
+                if last_processed is None:
+                    console.print(
+                        "[yellow]Nothing to discuss yet -- paste a job listing first.[/yellow]\n"
+                    )
+                else:
+                    await _run_job_followup_chat(db, *last_processed)
+                    console.print(
+                        "[dim]Paste the next job listing(s), or type quit to leave.[/dim]\n"
+                    )
+                continue
+
             if not raw_texts:
                 console.print(
                     "[yellow]Nothing pasted — try again, or type quit to leave.[/yellow]\n"
@@ -480,7 +513,7 @@ async def _chat_async(settings: Settings, profile: Profile) -> None:
                 if total > 1:
                     console.print(f"[dim]Processing job {index} of {total}...[/dim]")
                 try:
-                    await _process_pasted_job(db, profile, raw_text)
+                    last_processed = await _process_pasted_job(db, profile, raw_text)
                 except ManualJobParseError as exc:
                     console.print(f"[red]Couldn't read that listing:[/red] {exc}\n")
                 except Exception:
@@ -489,12 +522,17 @@ async def _chat_async(settings: Settings, profile: Profile) -> None:
                         "[red]Something went wrong processing that listing — see the log for "
                         "details. Continuing with the rest of the batch.[/red]\n"
                     )
-            console.print("[dim]Paste the next job listing(s), or type quit to leave.[/dim]\n")
+            console.print(
+                f"[dim]Paste the next job listing(s), type {_CHAT_FOLLOWUP_COMMAND} to discuss "
+                "the last one, or type quit to leave.[/dim]\n"
+            )
     finally:
         await db.dispose()
 
 
-async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) -> None:
+async def _process_pasted_job(
+    db: UlyssesDB, profile: Profile, raw_text: str
+) -> tuple[JobPost, JobScore, GeneratedProposal | None, GeneratedPrototype | None]:
     """Extract, score, draft, and prototype one pasted job listing.
 
     `ProposalAgent`/`PrototypeAgent` are constructed here, not once for the
@@ -502,6 +540,11 @@ async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) ->
     requires LLM credentials to be configured at all -- constructing them
     only wraps the already process-wide-cached `get_llm()` client, so there's
     no real cost to doing it per job instead of once per session.
+
+    Returns the job, its score, and the generated proposal/prototype (`None`
+    for both if the job was skipped) so the caller can offer a `/chat`
+    follow-up conversation about it -- this function itself never blocks on
+    further input.
     """
     with console.status("[bold cyan]Extracting job details...[/bold cyan]"):
         job = await extract_job_from_text(raw_text)
@@ -534,32 +577,104 @@ async def _process_pasted_job(db: UlyssesDB, profile: Profile, raw_text: str) ->
             "Narration failed; continuing without it"
         )
 
+    proposal: GeneratedProposal | None = None
+    prototype: GeneratedPrototype | None = None
+
     if score.recommendation is Recommendation.SKIP:
         console.print(
-            "[yellow]Not drafting a proposal or building a demo for this one. Use "
-            "`ulysses draft`/`build`/`go <url>` if you want them anyway.[/yellow]\n"
+            "[yellow]Not drafting a proposal or building a demo for this one. Run "
+            f"[cyan]ulysses draft {job.url}[/cyan] (or `build`/`go`) if you want them "
+            "anyway.[/yellow]\n"
         )
-        return
+    else:
+        proposal_agent = ProposalAgent()
+        prototype_agent = PrototypeAgent()
+        with console.status("[bold cyan]Drafting proposal and building prototype...[/bold cyan]"):
+            proposal, prototype = await asyncio.gather(
+                proposal_agent.generate(job, score, profile),
+                prototype_agent.generate(job, score, profile),
+            )
+        await db.add_proposal_draft(job.id, proposal.full_text)
+        await _persist_prototype_files(db, job.id, prototype)
 
-    proposal_agent = ProposalAgent()
-    prototype_agent = PrototypeAgent()
-    with console.status("[bold cyan]Drafting proposal and building prototype...[/bold cyan]"):
-        proposal, prototype = await asyncio.gather(
-            proposal_agent.generate(job, score, profile),
-            prototype_agent.generate(job, score, profile),
+        output_dir = _write_prototype_to_disk(prototype, job.id)
+        (output_dir / "proposal.txt").write_text(
+            proposal.full_text + render_milestones_block(proposal.milestones), encoding="utf-8"
         )
-    await db.add_proposal_draft(job.id, proposal.full_text)
-    await _persist_prototype_files(db, job.id, prototype)
 
-    output_dir = _write_prototype_to_disk(prototype, job.id)
-    (output_dir / "proposal.txt").write_text(
-        proposal.full_text + render_milestones_block(proposal.milestones), encoding="utf-8"
+        console.print(f"[green]Output written to {output_dir}[/green]")
+        console.print(Panel(proposal.full_text, title="Proposal"))
+        _print_milestones(proposal.milestones)
+        console.print(Panel(prototype.readme_md, title="README.md"))
+
+    return job, score, proposal, prototype
+
+
+_JOB_CHAT_EXIT_COMMANDS = {"next", "done"}
+_JOB_CHAT_SAVE_COMMAND = "/save"
+_MAX_CHAT_HISTORY_MESSAGES = 12  # ~6 exchanges -- a plain token-cost cap, not a context limit
+
+
+async def _run_job_followup_chat(
+    db: UlyssesDB,
+    job: JobPost,
+    score: JobScore,
+    proposal: GeneratedProposal | None,
+    prototype: GeneratedPrototype | None,
+) -> None:
+    """Hold a natural-language conversation about one job, entered via `/chat`.
+
+    `ChatAgent` is constructed lazily, on the first real message, not up
+    front -- someone who typed `/chat` and immediately changes their mind
+    (blank line, `next`, or EOF) shouldn't pay for building an LLM client
+    that's never used.
+    """
+    console.print(
+        "[dim]Ask away. Press Enter (or type next/done) to go back to pasting listings "
+        f"(type {_JOB_CHAT_SAVE_COMMAND} to save the latest reply as the new proposal draft).[/dim]"
     )
+    system_prompt = (
+        f"{CHAT_SYSTEM_PROMPT}\n\n{build_job_context_message(job, score, proposal, prototype)}"
+    )
+    chat_agent: ChatAgent | None = None
+    history: list[dict[str, str]] = []
+    last_reply: str | None = None
 
-    console.print(f"[green]Output written to {output_dir}[/green]")
-    console.print(Panel(proposal.full_text, title="Proposal"))
-    _print_milestones(proposal.milestones)
-    console.print(Panel(prototype.readme_md, title="README.md"))
+    while True:
+        try:
+            text = (await asyncio.to_thread(input, "> ")).strip()
+        except EOFError:
+            console.print()
+            return
+
+        if not text or text.lower() in _JOB_CHAT_EXIT_COMMANDS:
+            return
+
+        if text == _JOB_CHAT_SAVE_COMMAND:
+            if last_reply is None:
+                console.print("[yellow]Nothing to save yet -- ask something first.[/yellow]")
+                continue
+            await db.add_proposal_draft(job.id, last_reply)
+            output_path = Path("./output") / job.id / "proposal.txt"
+            output_path.write_text(last_reply, encoding="utf-8")
+            console.print(f"[green]Saved as the new proposal draft at {output_path}.[/green]")
+            continue
+
+        if chat_agent is None:
+            chat_agent = ChatAgent()
+        try:
+            with console.status("[bold cyan]Thinking...[/bold cyan]"):
+                reply = await chat_agent.reply(history, text, system_prompt=system_prompt)
+        except Exception:
+            logger.bind(job_id=job.id, agent="chat").exception("Chat reply failed")
+            console.print("[red]Something went wrong -- see the log for details.[/red]")
+            continue
+
+        console.print(f"[dim]{reply}[/dim]\n")
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": reply})
+        del history[:-_MAX_CHAT_HISTORY_MESSAGES]
+        last_reply = reply
 
 
 def _print_score_summary(job: JobPost, score: JobScore) -> None:
@@ -574,7 +689,7 @@ def _print_score_summary(job: JobPost, score: JobScore) -> None:
     console.print(table)
 
 
-def _read_pasted_job_listings() -> list[str] | None:
+def _read_pasted_job_listings() -> list[str] | str | None:
     """Read one or more pasted job listings from stdin as a single batch.
 
     Paste a listing, then either type NEXTJOB and press Enter to flush it and
@@ -606,6 +721,16 @@ def _read_pasted_job_listings() -> list[str] | None:
     NEXTJOB, or SUBMITJOB with nothing pasted at all, don't produce empty
     listings. The latter case returns an empty list (not `None`), distinct
     from an explicit quit.
+
+    Typing "/chat" (case-insensitive), same as "quit"/"exit", only counts as
+    the dedicated command when it's the very first thing typed with nothing
+    accumulated yet -- it returns the literal string `"/chat"` instead of a
+    list, a third, distinctly-typed outcome the caller uses to open a
+    follow-up conversation about the last processed job instead of reading
+    more listings. This -- not a freeform "type anything to chat" prompt --
+    is what keeps it unambiguous from pasting the next listing: anything
+    that isn't exactly "/chat" at that position is just treated as the start
+    of a new listing, the same as it always was.
     """
     chunks: list[str] = []
     lines: list[str] = []
@@ -626,8 +751,12 @@ def _read_pasted_job_listings() -> list[str] | None:
             return chunks
 
         candidate = line.rstrip()
-        if not lines and not chunks and candidate.strip().lower() in _CHAT_QUIT_COMMANDS:
-            return None
+        if not lines and not chunks:
+            stripped_lower = candidate.strip().lower()
+            if stripped_lower in _CHAT_QUIT_COMMANDS:
+                return None
+            if stripped_lower == _CHAT_FOLLOWUP_COMMAND:
+                return _CHAT_FOLLOWUP_COMMAND
 
         lowered = candidate.lower()
         if lowered.endswith(_CHAT_SUBMIT_SENTINEL.lower()):
@@ -645,6 +774,131 @@ def _read_pasted_job_listings() -> list[str] | None:
             continue
 
         lines.append(line)
+
+
+_ADVISE_JOB_COMMAND = "/job"
+_ADVISE_REFRESH_COMMAND = "/refresh"
+
+
+@app.command()
+def advise() -> None:
+    """Interactive advisor chat: ask about your job queue or freelance strategy."""
+    settings = get_settings()
+    profile = load_profile(settings.profile_path)
+    asyncio.run(_advise_async(settings, profile))
+
+
+async def _advise_async(settings: Settings, profile: Profile) -> None:
+    console.print("[bold green]Ulysses advise[/bold green] — ask about your queue or strategy.")
+    console.print(
+        f"Type [cyan]{_ADVISE_JOB_COMMAND} <url-or-id>[/cyan] to pull one job's full detail "
+        f"into the conversation, [cyan]{_ADVISE_REFRESH_COMMAND}[/cyan] to re-pull the queue "
+        "digest if it's changed, or [cyan]quit[/cyan]/[cyan]exit[/cyan] to leave.\n"
+    )
+
+    db = UlyssesDB(settings.db_path)
+    await db.init()
+    try:
+        jobs = await db.list_jobs()
+        system_prompt = _build_advisor_system_prompt(jobs, profile)
+        chat_agent: ChatAgent | None = None
+        history: list[dict[str, str]] = []
+
+        while True:
+            try:
+                text = (await asyncio.to_thread(input, "> ")).strip()
+            except EOFError:
+                console.print("\n[yellow]Goodbye.[/yellow]")
+                return
+
+            if not text:
+                continue
+            if text.lower() in _CHAT_QUIT_COMMANDS:
+                console.print("[yellow]Goodbye.[/yellow]")
+                return
+
+            if text.lower() == _ADVISE_REFRESH_COMMAND:
+                jobs = await db.list_jobs()
+                history.append({"role": "user", "content": build_queue_digest(jobs)})
+                history.append({"role": "assistant", "content": "Queue digest refreshed."})
+                console.print("[dim]Queue digest refreshed.[/dim]\n")
+                continue
+
+            if text.lower().startswith(_ADVISE_JOB_COMMAND):
+                identifier = text[len(_ADVISE_JOB_COMMAND) :].strip()
+                if not identifier:
+                    console.print(f"[yellow]Usage: {_ADVISE_JOB_COMMAND} <url-or-id>[/yellow]\n")
+                    continue
+                detail = await _build_job_detail_note(db, identifier)
+                if detail is None:
+                    console.print(f"[yellow]No job found matching:[/yellow] {identifier}\n")
+                    continue
+                history.append({"role": "user", "content": detail})
+                history.append(
+                    {"role": "assistant", "content": "Got it, I have that job's details now."}
+                )
+                console.print(f"[dim]Loaded details for {identifier}.[/dim]\n")
+                continue
+
+            if chat_agent is None:
+                chat_agent = ChatAgent()
+            try:
+                with console.status("[bold cyan]Thinking...[/bold cyan]"):
+                    reply = await chat_agent.reply(history, text, system_prompt=system_prompt)
+            except Exception:
+                logger.exception("Advisor chat reply failed")
+                console.print("[red]Something went wrong -- see the log for details.[/red]")
+                continue
+
+            console.print(f"[dim]{reply}[/dim]\n")
+            history.append({"role": "user", "content": text})
+            history.append({"role": "assistant", "content": reply})
+            del history[:-_MAX_CHAT_HISTORY_MESSAGES]
+    finally:
+        await db.dispose()
+
+
+def _build_advisor_system_prompt(jobs: list[Job], profile: Profile) -> str:
+    """Build the advisor session's static system prompt: persona + queue + profile summary."""
+    return (
+        f"{CHAT_SYSTEM_PROMPT}\n\n"
+        f"{build_advisor_profile_summary(profile)}\n\n"
+        f"{build_queue_digest(jobs)}"
+    )
+
+
+async def _build_job_detail_note(db: UlyssesDB, identifier: str) -> str | None:
+    """Look up one job by id or URL and render its full detail as plain text.
+
+    Appended to the advisor conversation's `history` (not the cached system
+    prompt) when the user asks about a specific job via `/job` -- a deep dive
+    on one job shouldn't force a fresh, uncached prefix for the rest of the
+    session. Tries `identifier` as a job id first, then as a URL. Returns
+    `None` if no job matches either way.
+    """
+    job_row = await db.get_job(identifier)
+    if job_row is None:
+        job_row = await db.get_job_by_url(identifier)
+    if job_row is None:
+        return None
+
+    full = await db.get_full_job(job_row.id)
+    if full is None:
+        return None
+    job, score = full
+
+    message = build_job_context_message(job, score, None, None)
+
+    drafts = await db.get_proposal_drafts(job_row.id)
+    if drafts:
+        message += f"\n\nMost recent saved proposal draft:\n{drafts[-1].content}"
+
+    prototype_files = await db.get_prototype_files(job_row.id)
+    readme = next((f for f in prototype_files if f.filename == "README.md"), None)
+    if readme is not None:
+        message += f"\n\nPrototype README:\n{readme.content}"
+
+    return message
 
 
 @app.command()

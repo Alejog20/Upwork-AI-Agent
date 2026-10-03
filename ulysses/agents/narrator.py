@@ -23,7 +23,6 @@ from ulysses.tools.llm import ainvoke_with_retry, get_llm
 __all__ = ["NarratorAgent"]
 
 _MAX_OUTPUT_TOKENS = 100
-_TEMPERATURE = 0.8
 
 _SYSTEM_PROMPT = """You are Ulysses, narrating your own scoring verdict on an Upwork job to \
 Alejandro, the freelancer you work for. He can already see the raw numbers in a table above this \
@@ -83,9 +82,12 @@ class NarratorAgent:
 
     async def narrate(self, job: JobPost, score: JobScore, profile: Profile) -> str:
         """Generate a short explanation of why a job scored the way it did."""
-        structured_llm = self._llm.bind(
-            max_tokens=_MAX_OUTPUT_TOKENS, temperature=_TEMPERATURE
-        ).with_structured_output(_NarrationOutput)
+        # No `temperature` override: Claude 4+ models (e.g. Sonnet 5) reject any
+        # non-default sampling parameter with a 400, so this must stay portable
+        # across providers rather than tuned for one.
+        structured_llm = self._llm.bind(max_tokens=_MAX_OUTPUT_TOKENS).with_structured_output(
+            _NarrationOutput
+        )
         prompt = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {

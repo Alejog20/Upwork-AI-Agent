@@ -102,6 +102,7 @@ class RepoMatch(BaseModel):
     repo_name: str
     url: str
     relevance_score: float
+    description: str = ""
 
 
 class JobScore(BaseModel):

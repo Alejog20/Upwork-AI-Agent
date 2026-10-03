@@ -649,6 +649,15 @@ def _mock_narrator_agent(mocker: MockerFixture, *blurbs: str) -> MagicMock:
     )
 
 
+def _mock_chat_agent(mocker: MockerFixture, *replies: str) -> MagicMock:
+    """Patch `ChatAgent` so chat/advise tests never make a real LLM call."""
+    texts = replies or ("A reply.",)
+    return mocker.patch(
+        "ulysses.cli.main.ChatAgent",
+        return_value=MagicMock(reply=AsyncMock(side_effect=list(texts))),
+    )
+
+
 class TestChatCommand:
     def test_quitting_immediately_prints_goodbye_and_touches_nothing(
         self, mocker: MockerFixture
@@ -753,6 +762,8 @@ class TestChatCommand:
         assert result.exit_code == 0
         assert "I'd skip this one." in result.stdout
         assert "Not drafting a proposal" in result.stdout
+        assert "ulysses draft" in result.stdout
+        assert weak_job.url in result.stdout
         assert "Generated proposal text." not in result.stdout
         proposal_agent_mock.assert_not_called()
         prototype_agent_mock.assert_not_called()
@@ -869,6 +880,343 @@ class TestChatCommand:
         assert result.exit_code == 0
         assert "Something went wrong processing that listing" in result.stdout
         assert "Goodbye" in result.stdout
+
+    def test_chat_before_any_job_is_processed_shows_a_nudge(self) -> None:
+        result = runner.invoke(app, ["chat"], input="/chat\nquit\n")
+
+        assert result.exit_code == 0
+        assert "Nothing to discuss yet" in result.stdout
+        assert "Goodbye" in result.stdout
+
+    def test_chat_followup_round_trips_through_chat_agent_and_returns_to_pasting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        job = _mock_pasted_job()
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=job))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
+        )
+        _mock_narrator_agent(mocker)
+        chat_agent_mock = _mock_chat_agent(mocker, "Here's a punchier hook.")
+
+        result = runner.invoke(
+            app,
+            ["chat"],
+            input=(
+                "Some pasted job text here.SUBMITJOB\n/chat\nMake the hook punchier.\nnext\nquit\n"
+            ),
+        )
+
+        assert result.exit_code == 0
+        assert "Here's a punchier hook." in result.stdout
+        assert "Paste the next job listing(s), or type quit to leave." in result.stdout
+        chat_agent_mock.return_value.reply.assert_awaited_once()
+        _, message_arg = chat_agent_mock.return_value.reply.await_args.args
+        assert message_arg == "Make the hook punchier."
+        system_prompt = chat_agent_mock.return_value.reply.await_args.kwargs["system_prompt"]
+        assert job.title in system_prompt
+
+    def test_save_persists_latest_reply_as_the_new_proposal_draft(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        job = _mock_pasted_job()
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=job))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
+        )
+        _mock_narrator_agent(mocker)
+        _mock_chat_agent(mocker, "The revised proposal text.")
+
+        result = runner.invoke(
+            app,
+            ["chat"],
+            input=(
+                "Some pasted job text here.SUBMITJOB\n/chat\nRewrite the hook.\n/save\ndone\nquit\n"
+            ),
+        )
+
+        assert result.exit_code == 0
+        assert "Saved as the new proposal draft" in result.stdout
+        assert (
+            Path("output") / job.id / "proposal.txt"
+        ).read_text() == "The revised proposal text."
+
+        settings = get_settings()
+
+        async def _check() -> list[str]:
+            db = UlyssesDB(settings.db_path)
+            await db.init()
+            drafts = await db.get_proposal_drafts(job.id)
+            await db.dispose()
+            return [d.content for d in drafts]
+
+        contents = asyncio.run(_check())
+        assert "The revised proposal text." in contents
+
+    def test_save_with_nothing_to_save_shows_a_nudge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        job = _mock_pasted_job()
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=job))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
+        )
+        _mock_narrator_agent(mocker)
+        chat_agent_mock = _mock_chat_agent(mocker)
+
+        result = runner.invoke(
+            app,
+            ["chat"],
+            input="Some pasted job text here.SUBMITJOB\n/chat\n/save\ndone\nquit\n",
+        )
+
+        assert result.exit_code == 0
+        assert "Nothing to save yet" in result.stdout
+        chat_agent_mock.assert_not_called()
+
+    def test_eof_mid_followup_chat_leaves_cleanly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        job = _mock_pasted_job()
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=job))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
+        )
+        _mock_narrator_agent(mocker)
+        chat_agent_mock = _mock_chat_agent(mocker)
+
+        result = runner.invoke(app, ["chat"], input="Some pasted job text here.SUBMITJOB\n/chat\n")
+
+        assert result.exit_code == 0
+        chat_agent_mock.assert_not_called()
+
+    def test_chat_reply_failure_shows_friendly_error_and_continues_the_conversation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        job = _mock_pasted_job()
+        mocker.patch("ulysses.cli.main.extract_job_from_text", new=AsyncMock(return_value=job))
+        mocker.patch(
+            "ulysses.cli.main.ProposalAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_proposal())),
+        )
+        mocker.patch(
+            "ulysses.cli.main.PrototypeAgent",
+            return_value=MagicMock(generate=AsyncMock(return_value=_mock_prototype(job.id))),
+        )
+        _mock_narrator_agent(mocker)
+        mocker.patch(
+            "ulysses.cli.main.ChatAgent",
+            return_value=MagicMock(reply=AsyncMock(side_effect=RuntimeError("boom"))),
+        )
+
+        result = runner.invoke(
+            app,
+            ["chat"],
+            input="Some pasted job text here.SUBMITJOB\n/chat\nWhat happened?\ndone\nquit\n",
+        )
+
+        assert result.exit_code == 0
+        assert "Something went wrong" in result.stdout
+        assert "Goodbye" in result.stdout
+
+
+class TestAdviseCommand:
+    def test_quitting_immediately_with_no_jobs_leaves_cleanly(self) -> None:
+        result = runner.invoke(app, ["advise"], input="quit\n")
+
+        assert result.exit_code == 0
+        assert "Goodbye" in result.stdout
+
+    def test_eof_before_any_input_leaves_cleanly(self) -> None:
+        result = runner.invoke(app, ["advise"], input="")
+
+        assert result.exit_code == 0
+        assert "Goodbye" in result.stdout
+
+    def test_plain_question_round_trips_through_chat_agent(self, mocker: MockerFixture) -> None:
+        chat_agent_mock = _mock_chat_agent(mocker, "You've got two strong jobs queued.")
+
+        result = runner.invoke(app, ["advise"], input="What should I prioritize?\nquit\n")
+
+        assert result.exit_code == 0
+        assert "You've got two strong jobs queued." in result.stdout
+        chat_agent_mock.return_value.reply.assert_awaited_once()
+        _, message_arg = chat_agent_mock.return_value.reply.await_args.args
+        assert message_arg == "What should I prioritize?"
+
+    def test_blank_line_is_ignored(self, mocker: MockerFixture) -> None:
+        chat_agent_mock = _mock_chat_agent(mocker, "A reply.")
+
+        result = runner.invoke(app, ["advise"], input="\nA real question\nquit\n")
+
+        assert result.exit_code == 0
+        chat_agent_mock.return_value.reply.assert_awaited_once()
+
+    def test_reply_failure_shows_friendly_error_and_continues(self, mocker: MockerFixture) -> None:
+        mocker.patch(
+            "ulysses.cli.main.ChatAgent",
+            return_value=MagicMock(reply=AsyncMock(side_effect=RuntimeError("boom"))),
+        )
+
+        result = runner.invoke(app, ["advise"], input="What should I prioritize?\nquit\n")
+
+        assert result.exit_code == 0
+        assert "Something went wrong" in result.stdout
+        assert "Goodbye" in result.stdout
+
+    def test_job_command_with_unknown_identifier_shows_not_found(self) -> None:
+        result = runner.invoke(app, ["advise"], input="/job does-not-exist\nquit\n")
+
+        assert result.exit_code == 0
+        assert "No job found matching" in result.stdout
+
+    def test_job_command_without_an_identifier_shows_usage(self) -> None:
+        result = runner.invoke(app, ["advise"], input="/job\nquit\n")
+
+        assert result.exit_code == 0
+        assert "Usage: /job" in result.stdout
+
+    def test_job_command_loads_a_known_job_into_history(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        settings = get_settings()
+
+        async def _seed() -> None:
+            db = UlyssesDB(settings.db_path)
+            await db.init()
+            job = _mock_pasted_job(id="seeded-job", url="manual://seeded-job")
+            score = score_job(job, load_profile(DEFAULT_PROFILE_PATH))
+            await db.upsert_job(
+                Job(
+                    id=job.id,
+                    title=job.title,
+                    description=job.description,
+                    url=job.url,
+                    score=score.total_score,
+                    category=score.gig_category.value,
+                    status=JobStatus.NEW,
+                    posted_at=job.posted_at,
+                    job_json=job.model_dump_json(),
+                    score_json=score.model_dump_json(),
+                )
+            )
+            await db.add_proposal_draft(job.id, "A previously saved draft.")
+            await db.dispose()
+
+        asyncio.run(_seed())
+        chat_agent_mock = _mock_chat_agent(mocker, "Here's my take on that job.")
+
+        result = runner.invoke(
+            app,
+            ["advise"],
+            input="/job seeded-job\nWhat do you think?\nquit\n",
+        )
+
+        assert result.exit_code == 0
+        assert "Loaded details for seeded-job" in result.stdout
+        history_arg, _ = chat_agent_mock.return_value.reply.await_args.args
+        assert any("A previously saved draft." in turn["content"] for turn in history_arg)
+
+    def test_job_command_with_prototype_readme_includes_it_in_history(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        settings = get_settings()
+
+        async def _seed() -> None:
+            db = UlyssesDB(settings.db_path)
+            await db.init()
+            job = _mock_pasted_job(id="seeded-job-2", url="manual://seeded-job-2")
+            score = score_job(job, load_profile(DEFAULT_PROFILE_PATH))
+            await db.upsert_job(
+                Job(
+                    id=job.id,
+                    title=job.title,
+                    description=job.description,
+                    url=job.url,
+                    score=score.total_score,
+                    category=score.gig_category.value,
+                    status=JobStatus.NEW,
+                    posted_at=job.posted_at,
+                    job_json=job.model_dump_json(),
+                    score_json=score.model_dump_json(),
+                )
+            )
+            await db.add_prototype_file(job.id, "README.md", "# A generated demo README.")
+            await db.dispose()
+
+        asyncio.run(_seed())
+        chat_agent_mock = _mock_chat_agent(mocker, "Noted.")
+
+        result = runner.invoke(app, ["advise"], input="/job seeded-job-2\nok\nquit\n")
+
+        assert result.exit_code == 0
+        history_arg, _ = chat_agent_mock.return_value.reply.await_args.args
+        assert any("A generated demo README." in turn["content"] for turn in history_arg)
+
+    def test_job_command_for_a_job_missing_full_data_shows_not_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A job row that predates `job_json`/`score_json` being populated --
+        # `get_full_job` returns `None` even though the row itself exists.
+        monkeypatch.chdir(tmp_path)
+        settings = get_settings()
+
+        async def _seed() -> None:
+            db = UlyssesDB(settings.db_path)
+            await db.init()
+            await db.upsert_job(
+                Job(
+                    id="pre-phase-2-job",
+                    title="An old job",
+                    description="desc",
+                    url="manual://pre-phase-2-job",
+                    score=50.0,
+                    category="tier2",
+                    status=JobStatus.NEW,
+                    posted_at=datetime.now(UTC),
+                )
+            )
+            await db.dispose()
+
+        asyncio.run(_seed())
+
+        result = runner.invoke(app, ["advise"], input="/job pre-phase-2-job\nquit\n")
+
+        assert result.exit_code == 0
+        assert "No job found matching" in result.stdout
+
+    def test_refresh_command_reloads_the_queue_digest(self) -> None:
+        result = runner.invoke(app, ["advise"], input="/refresh\nquit\n")
+
+        assert result.exit_code == 0
+        assert "Queue digest refreshed" in result.stdout
 
 
 class TestReadPastedJobListings:

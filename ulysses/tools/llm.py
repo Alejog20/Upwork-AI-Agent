@@ -1,18 +1,24 @@
 """Factory for the shared chat LLM client — the only place a model is instantiated.
 
 Every agent must obtain its LLM through `get_llm()` rather than constructing a
-chat model directly, so swapping providers/models is a one-line change. Retry
-logic wraps every call via `ainvoke_with_retry`; the 30s hard timeout and
-retry count are configured on the client itself in `get_llm()`.
+chat model directly, so swapping providers/models is a one-line change.
+`get_llm()` returns `ChatAnthropic` or `ChatOpenAI` depending on
+`settings.llm_provider` -- `ChatOpenAI` also serves OpenAI-compatible
+endpoints (e.g. Gemini) via `llm_base_url`. Retry logic wraps every call via
+`ainvoke_with_retry`; the 30s hard timeout and retry count are configured on
+the client itself in `get_llm()`.
 
 `aembed_texts` is a separate, narrower entry point for embeddings (used by
 `tools.example_retrieval` for semantic example-proposal retrieval). It does
-NOT go through `get_llm()`/`ChatOpenAI` -- Gemini's OpenAI-compatible endpoint
-(what `llm_base_url` points `ChatOpenAI` at) returns HTTP 501 UNIMPLEMENTED for
-embeddings, confirmed empirically. Gemini's *native* embedContent endpoint (a
-different URL, same API key) works, so this calls it directly via `httpx`
-(already a project dependency) rather than adding a whole new LangChain
-provider package for one REST call.
+NOT go through `get_llm()` -- regardless of `settings.llm_provider`, it always
+calls Gemini's native embedContent endpoint directly, authenticated with its
+own `settings.llm_embedding_api_key` (deliberately separate from
+`llm_api_key`, which authenticates chat completions). Gemini's OpenAI-
+compatible endpoint (what `llm_base_url` points `ChatOpenAI` at) returns HTTP
+501 UNIMPLEMENTED for embeddings, confirmed empirically; its *native*
+embedContent endpoint (a different URL) works, so this calls it directly via
+`httpx` (already a project dependency) rather than adding a whole new
+LangChain provider package for one REST call.
 """
 
 from __future__ import annotations
@@ -22,12 +28,16 @@ from functools import lru_cache
 from typing import Any
 
 import httpx
+from anthropic import APIError as AnthropicAPIError
+from anthropic import APITimeoutError as AnthropicAPITimeoutError
+from langchain_anthropic import ChatAnthropic
 from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
-from openai import APIError, APITimeoutError
+from openai import APIError as OpenAIAPIError
+from openai import APITimeoutError as OpenAIAPITimeoutError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from ulysses.config.settings import get_settings
+from ulysses.config.settings import LlmProvider, get_settings
 
 __all__ = ["aembed_texts", "ainvoke_with_retry", "get_llm"]
 
@@ -36,7 +46,9 @@ _MAX_RETRIES = 3
 _EMBED_CONTENT_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent"
 
 _llm_retry = retry(
-    retry=retry_if_exception_type((APIError, APITimeoutError)),
+    retry=retry_if_exception_type(
+        (OpenAIAPIError, OpenAIAPITimeoutError, AnthropicAPIError, AnthropicAPITimeoutError)
+    ),
     wait=wait_exponential(multiplier=1, min=2, max=20),
     stop=stop_after_attempt(_MAX_RETRIES),
     reraise=True,
@@ -51,9 +63,16 @@ _embed_retry = retry(
 
 
 @lru_cache
-def get_llm() -> ChatOpenAI:
+def get_llm() -> ChatAnthropic | ChatOpenAI:
     """Return the shared, process-wide chat model client, configured from `Settings`."""
     settings = get_settings()
+    if settings.llm_provider is LlmProvider.ANTHROPIC:
+        return ChatAnthropic(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            timeout=_TIMEOUT_SECONDS,
+            max_retries=_MAX_RETRIES,
+        )
     return ChatOpenAI(
         model=settings.llm_model,
         api_key=settings.llm_api_key,
@@ -79,7 +98,7 @@ async def aembed_texts(texts: list[str]) -> list[list[float]]:
     url = _EMBED_CONTENT_URL.format(model=settings.llm_embedding_model)
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
         return await asyncio.gather(
-            *(_embed_one(client, url, settings.llm_api_key, text) for text in texts)
+            *(_embed_one(client, url, settings.llm_embedding_api_key, text) for text in texts)
         )
 
 

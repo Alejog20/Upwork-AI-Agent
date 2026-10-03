@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ulysses.config.settings import Settings, get_settings
+from ulysses.config.settings import LlmProvider, Settings, get_settings
 
 
 def _set_required_env(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
@@ -37,6 +37,31 @@ class TestImapHostResolution:
             ULYSSES_IMAP_HOST_OVERRIDE="imap.example.com",
         )
         assert Settings().imap_host == "imap.example.com"
+
+
+class TestLlmProvider:
+    def test_defaults_to_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set_required_env(monkeypatch)
+        # `_env_file=None` isolates this from whatever this machine's own
+        # `.env` happens to set -- we want the field's bare default, not
+        # whatever the developer last configured.
+        assert Settings(_env_file=None).llm_provider is LlmProvider.OPENAI
+
+    def test_can_be_set_to_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set_required_env(monkeypatch, ULYSSES_LLM_PROVIDER="anthropic")
+        assert Settings().llm_provider is LlmProvider.ANTHROPIC
+
+    def test_embedding_api_key_is_independent_of_llm_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_required_env(
+            monkeypatch,
+            ULYSSES_LLM_API_KEY="anthropic-chat-key",
+            ULYSSES_LLM_EMBEDDING_API_KEY="gemini-embedding-key",
+        )
+        settings = Settings()
+        assert settings.llm_api_key == "anthropic-chat-key"
+        assert settings.llm_embedding_api_key == "gemini-embedding-key"
 
 
 class TestDerivedPaths:

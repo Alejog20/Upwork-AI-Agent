@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 from openai import APITimeoutError
 from pytest_mock import MockerFixture
@@ -22,6 +23,7 @@ def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ULYSSES_TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("ULYSSES_TELEGRAM_CHAT_ID", "123456")
     monkeypatch.setenv("ULYSSES_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("ULYSSES_LLM_EMBEDDING_API_KEY", "test-embedding-key")
     get_settings.cache_clear()
 
 
@@ -37,14 +39,17 @@ class TestGetLlm:
         monkeypatch.setenv("ULYSSES_IMAP_APP_PASSWORD", "secret")
         monkeypatch.setenv("ULYSSES_TELEGRAM_BOT_TOKEN", "token")
         monkeypatch.setenv("ULYSSES_TELEGRAM_CHAT_ID", "123456")
+        monkeypatch.setenv("ULYSSES_LLM_PROVIDER", "openai")
         monkeypatch.setenv("ULYSSES_LLM_API_KEY", "test-key")
         monkeypatch.setenv("ULYSSES_LLM_MODEL", "gpt-4o-mini")
+        get_settings.cache_clear()
         get_llm.cache_clear()
         try:
             llm = get_llm()
             assert isinstance(llm, ChatOpenAI)
             assert llm.model_name == "gpt-4o-mini"
         finally:
+            get_settings.cache_clear()
             get_llm.cache_clear()
 
     def test_returns_the_same_cached_instance(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,6 +62,26 @@ class TestGetLlm:
         try:
             assert get_llm() is get_llm()
         finally:
+            get_llm.cache_clear()
+
+    def test_anthropic_provider_returns_a_chat_anthropic_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ULYSSES_IMAP_USER", "me@gmail.com")
+        monkeypatch.setenv("ULYSSES_IMAP_APP_PASSWORD", "secret")
+        monkeypatch.setenv("ULYSSES_TELEGRAM_BOT_TOKEN", "token")
+        monkeypatch.setenv("ULYSSES_TELEGRAM_CHAT_ID", "123456")
+        monkeypatch.setenv("ULYSSES_LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("ULYSSES_LLM_API_KEY", "test-key")
+        monkeypatch.setenv("ULYSSES_LLM_MODEL", "claude-sonnet-5")
+        get_settings.cache_clear()
+        get_llm.cache_clear()
+        try:
+            llm = get_llm()
+            assert isinstance(llm, ChatAnthropic)
+            assert llm.model == "claude-sonnet-5"
+        finally:
+            get_settings.cache_clear()
             get_llm.cache_clear()
 
 
@@ -114,6 +139,41 @@ class TestAembedTexts:
             get_settings.cache_clear()
 
         assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+
+    async def test_uses_the_embedding_key_not_the_chat_llm_key(
+        self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Regression test: embeddings must authenticate with `llm_embedding_api_key`,
+
+        never `llm_api_key` -- those can point at different providers (e.g. Anthropic
+        for chat, Gemini for embeddings), and sending one provider's key to the other's
+        endpoint fails auth.
+        """
+        _set_required_env(monkeypatch)
+        monkeypatch.setenv("ULYSSES_LLM_API_KEY", "anthropic-chat-key")
+        monkeypatch.setenv("ULYSSES_LLM_EMBEDDING_API_KEY", "gemini-embedding-key")
+        get_settings.cache_clear()
+        seen_keys: list[str] = []
+
+        async def _fake_post(url: str, params: dict, json: dict) -> MagicMock:
+            seen_keys.append(params["key"])
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+            response.json = MagicMock(return_value={"embedding": {"values": [1.0]}})
+            return response
+
+        client = AsyncMock()
+        client.post = AsyncMock(side_effect=_fake_post)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        mocker.patch("ulysses.tools.llm.httpx.AsyncClient", return_value=client)
+
+        try:
+            await aembed_texts(["hello"])
+        finally:
+            get_settings.cache_clear()
+
+        assert seen_keys == ["gemini-embedding-key"]
 
     async def test_retries_on_transient_http_error_then_succeeds(
         self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
