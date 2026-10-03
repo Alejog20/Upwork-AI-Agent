@@ -37,7 +37,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from ulysses.config.profile import Profile
 from ulysses.models import GeneratedProposal, GeneratedPrototype, JobPost, JobScore
-from ulysses.tools.db import Job
+from ulysses.tools.db import Job, UlyssesDB
 from ulysses.tools.llm import ainvoke_with_retry, get_llm
 
 __all__ = [
@@ -45,6 +45,7 @@ __all__ = [
     "ChatAgent",
     "build_advisor_profile_summary",
     "build_job_context_message",
+    "build_job_lookup_message",
     "build_queue_digest",
 ]
 
@@ -159,6 +160,41 @@ def build_job_context_message(
             prototype.readme_md,
         ]
     return "\n".join(lines)
+
+
+async def build_job_lookup_message(db: UlyssesDB, identifier: str) -> str | None:
+    """Look up one job by id or URL and render its full detail as plain text.
+
+    Meant to be appended to a conversation's `history` (not the cached system
+    prompt) when the user asks about a specific job by name -- a deep dive on
+    one job shouldn't force a fresh, uncached prefix for the rest of the
+    session. Tries `identifier` as a job id first, then as a URL. Returns
+    `None` if no job matches either way, or if it matches but predates
+    `job_json`/`score_json` being populated.
+    """
+    job_row = await db.get_job(identifier)
+    if job_row is None:
+        job_row = await db.get_job_by_url(identifier)
+    if job_row is None:
+        return None
+
+    full = await db.get_full_job(job_row.id)
+    if full is None:
+        return None
+    job, score = full
+
+    message = build_job_context_message(job, score, None, None)
+
+    drafts = await db.get_proposal_drafts(job_row.id)
+    if drafts:
+        message += f"\n\nMost recent saved proposal draft:\n{drafts[-1].content}"
+
+    prototype_files = await db.get_prototype_files(job_row.id)
+    readme = next((f for f in prototype_files if f.filename == "README.md"), None)
+    if readme is not None:
+        message += f"\n\nPrototype README:\n{readme.content}"
+
+    return message
 
 
 def build_queue_digest(jobs: list[Job], *, limit: int = _MAX_QUEUE_DIGEST_JOBS) -> str:

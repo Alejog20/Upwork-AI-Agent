@@ -23,6 +23,7 @@ from ulysses.agents.chat import (
     ChatAgent,
     build_advisor_profile_summary,
     build_job_context_message,
+    build_job_lookup_message,
     build_queue_digest,
 )
 from ulysses.agents.narrator import NarratorAgent
@@ -96,7 +97,10 @@ def _build_dependencies(
     )
     scout = ScoutAgent(email_reader=email_reader, db=db, profile=profile)
     notifier = NotifierAgent(
-        bot_token=settings.telegram_bot_token, chat_id=settings.telegram_chat_id, db=db
+        bot_token=settings.telegram_bot_token,
+        chat_id=settings.telegram_chat_id,
+        db=db,
+        profile=profile,
     )
     return db, scout, notifier
 
@@ -138,6 +142,29 @@ def _make_build_handler(
         await notifier.send_prototype_zip(job_id, prototype, zip_bytes)
 
     return on_build_requested
+
+
+def _make_telegram_job_handler(
+    db: UlyssesDB, profile: Profile, notifier: NotifierAgent
+) -> Callable[[str], Awaitable[None]]:
+    """Build the callback that runs a Telegram-pasted job through the real pipeline.
+
+    Same shape as `_make_draft_handler`/`_make_build_handler` -- `NotifierAgent`
+    stays decoupled from the pipeline agents; this closure does the real work
+    and sends the result back via `notifier`. Reuses `_process_pasted_job`
+    unchanged (the same function `ulysses chat` uses), so a job pasted into
+    Telegram gets identical scoring/drafting to one pasted in the CLI. Any
+    `ManualJobParseError` it raises is deliberately not caught here -- it
+    propagates to `NotifierAgent.handle_text_message`, which is what decides
+    to fall back to chat instead of showing an error.
+    """
+
+    async def on_job_text_submitted(raw_text: str) -> None:
+        job, score, proposal, prototype = await _process_pasted_job(db, profile, raw_text)
+        zip_bytes = build_prototype_zip(prototype) if prototype is not None else None
+        await notifier.send_job_processed_summary(job, score, proposal, prototype, zip_bytes)
+
+    return on_job_text_submitted
 
 
 async def _persist_prototype_files(
@@ -208,6 +235,7 @@ async def run_forever(
     graph = build_graph(profile, notifier, proposal_agent, prototype_agent, db)
     notifier.set_draft_handler(_make_draft_handler(db, proposal_agent, notifier, profile))
     notifier.set_build_handler(_make_build_handler(db, prototype_agent, notifier, profile))
+    notifier.set_job_text_handler(_make_telegram_job_handler(db, profile, notifier))
 
     async def on_scored_job(job: JobPost, score: JobScore) -> None:
         config = {"configurable": {"thread_id": job.id}}
@@ -233,6 +261,10 @@ async def run_forever(
 
     telegram_app = _build_telegram_application(settings)
     telegram_app.add_handler(notifier.callback_handler)
+    telegram_app.add_handler(notifier.job_command_handler)
+    telegram_app.add_handler(notifier.refresh_command_handler)
+    telegram_app.add_handler(notifier.help_command_handler)
+    telegram_app.add_handler(notifier.message_handler)
 
     try:
         await _start_telegram_with_retry(telegram_app)
@@ -829,7 +861,7 @@ async def _advise_async(settings: Settings, profile: Profile) -> None:
                 if not identifier:
                     console.print(f"[yellow]Usage: {_ADVISE_JOB_COMMAND} <url-or-id>[/yellow]\n")
                     continue
-                detail = await _build_job_detail_note(db, identifier)
+                detail = await build_job_lookup_message(db, identifier)
                 if detail is None:
                     console.print(f"[yellow]No job found matching:[/yellow] {identifier}\n")
                     continue
@@ -865,40 +897,6 @@ def _build_advisor_system_prompt(jobs: list[Job], profile: Profile) -> str:
         f"{build_advisor_profile_summary(profile)}\n\n"
         f"{build_queue_digest(jobs)}"
     )
-
-
-async def _build_job_detail_note(db: UlyssesDB, identifier: str) -> str | None:
-    """Look up one job by id or URL and render its full detail as plain text.
-
-    Appended to the advisor conversation's `history` (not the cached system
-    prompt) when the user asks about a specific job via `/job` -- a deep dive
-    on one job shouldn't force a fresh, uncached prefix for the rest of the
-    session. Tries `identifier` as a job id first, then as a URL. Returns
-    `None` if no job matches either way.
-    """
-    job_row = await db.get_job(identifier)
-    if job_row is None:
-        job_row = await db.get_job_by_url(identifier)
-    if job_row is None:
-        return None
-
-    full = await db.get_full_job(job_row.id)
-    if full is None:
-        return None
-    job, score = full
-
-    message = build_job_context_message(job, score, None, None)
-
-    drafts = await db.get_proposal_drafts(job_row.id)
-    if drafts:
-        message += f"\n\nMost recent saved proposal draft:\n{drafts[-1].content}"
-
-    prototype_files = await db.get_prototype_files(job_row.id)
-    readme = next((f for f in prototype_files if f.filename == "README.md"), None)
-    if readme is not None:
-        message += f"\n\nPrototype README:\n{readme.content}"
-
-    return message
 
 
 @app.command()

@@ -15,9 +15,9 @@ from ulysses.graph.graph import build_graph
 
 
 @pytest.fixture
-def notifier(mocker: MockerFixture) -> NotifierAgent:
+def notifier(mocker: MockerFixture, profile: Profile) -> NotifierAgent:
     mocker.patch("ulysses.agents.notifier.Bot")
-    return NotifierAgent(bot_token="fake-token", chat_id="123456", db=MagicMock())
+    return NotifierAgent(bot_token="fake-token", chat_id="123456", db=MagicMock(), profile=profile)
 
 
 @pytest.fixture
