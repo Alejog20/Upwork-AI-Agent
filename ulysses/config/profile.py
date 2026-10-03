@@ -58,7 +58,7 @@ class RepoConfig(BaseModel):
     name: str
     url: str
     tags: list[str] = Field(default_factory=list)
-    description: str= ""
+    description: str = ""
 
 
 class ScoringWeights(BaseModel):
