@@ -8,6 +8,9 @@ freelancer:
 skills:
   primary:
     - python
+    - etl
+    - llm
+    - ai engineering
     - fastapi
     - web scraping
     - automation
@@ -23,28 +26,34 @@ skills:
     - react
     - typescript
     - rag
+    - sql
 
 repos:
   - name: Multiple_source_scraper
     url: https://github.com/Alejog20/Multiple_source_scraper
     tags: [scraping, python, data extraction, multi-platform]
+    description: "An intelligence tool to track pricing accross ecommerce websites directly from a Telegram chat"
   - name: download-autoprocessor
     url: https://github.com/Alejog20/download-autoprocessor
-    tags: [automation, file processing, watchdog, python]
+    tags: [automation, file processing, data cleaning, data transformation, etl, watchdog, python]
+    description: "Watches for new download files and process automatically csv and .dat files to .xlsx format. Zip files get decompressed automatically "
   - name: Invoice_generator_from_xlsx
     url: https://github.com/Alejog20/Invoice_generator_from_xlsx
-    tags: [automation, excel, pdf, pandas, reporting]
-  - name: Extract_Reddit_comments_bot
+    tags: [automation, excel, pdf, pandas, reporting, data transformation]
+    description: ""
+  - name: Reddit Sentiment Analysis
     url: https://github.com/Alejog20/Extract_Reddit_comments_bot
-    tags: [api, reddit, data extraction, python bot]
+    tags: [api, reddit, data extraction, python bot, statistics, machine learning, etl pipelines]
+    description: "A pipeline that extracts real comments from Reddit and analyses topics based on sentiment. Provides a summary report"
   - name: Second Brain Obsidian
     url: https://github.com/Alejog20/second_brain_obsidian
-    tags: [api, reddit, data extraction, python bot, rag, llm]
+    tags: [api, reddit, data extraction, python bot, rag, llm, machine learning]
+    description: "My Second Brain tool that helps me organize and remember things easier"
 
 
 scoring:
-  target_budget_min: 50
-  target_budget_max: 800
+  target_budget_min: 200
+  target_budget_max: 3000
   min_score_to_notify: 50
   instant_alert_threshold: 75
   skip_if_proposals_above: 25

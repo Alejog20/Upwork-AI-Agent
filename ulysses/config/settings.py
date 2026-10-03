@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-__all__ = ["ImapProvider", "Settings", "get_settings"]
+__all__ = ["ImapProvider", "LlmProvider", "Settings", "get_settings"]
 
 
 class ImapProvider(StrEnum):
@@ -21,6 +21,13 @@ class ImapProvider(StrEnum):
 
     GMAIL = "gmail"
     ICLOUD = "icloud"
+
+
+class LlmProvider(StrEnum):
+    """Supported chat-model backends for `ulysses.tools.llm.get_llm`."""
+
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
 
 
 _IMAP_HOSTS: dict[ImapProvider, str] = {
@@ -52,16 +59,21 @@ class Settings(BaseSettings):
     telegram_chat_id: str
 
     # LLM (see `ulysses.tools.llm.get_llm`)
+    llm_provider: LlmProvider = LlmProvider.OPENAI
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
     llm_base_url: str | None = None
 
     # Embeddings for example-proposal retrieval (see `ulysses.tools.llm.aembed_texts`).
-    # Calls Gemini's native embedContent endpoint directly -- Gemini's OpenAI-
-    # compatible endpoint (what `llm_base_url` points ChatOpenAI at) does not
-    # support embeddings at all (confirmed: HTTP 501 UNIMPLEMENTED regardless of
-    # model name). This only works with a Gemini API key; swap the embedding
-    # client if this project ever moves to a different embeddings provider.
+    # Always calls Gemini's native embedContent endpoint directly, regardless of
+    # `llm_provider` -- Gemini's OpenAI-compatible endpoint (what `llm_base_url`
+    # points ChatOpenAI at) does not support embeddings at all (confirmed: HTTP
+    # 501 UNIMPLEMENTED regardless of model name), and no other configured
+    # provider here offers a public embeddings API. Deliberately a separate key
+    # from `llm_api_key` so switching `llm_provider` (e.g. to Anthropic) doesn't
+    # also have to replace this -- a Gemini key has nothing to do with which
+    # provider generates chat completions.
+    llm_embedding_api_key: str = ""
     llm_embedding_model: str = "gemini-embedding-001"
 
     # Paths

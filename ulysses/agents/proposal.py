@@ -110,7 +110,6 @@ _FORBIDDEN_PHRASES: tuple[str, ...] = (
 _MAX_CHARS = 1200  # raised from 800: hook+3 bullets+close no longer fit 800 without truncation
 _MAX_EMOJI = 2
 _MAX_OUTPUT_TOKENS = 500  # bumped from 300: "close" + up to 4 milestone descriptions need room
-_LLM_TEMPERATURE = 0.9  # higher than the client default -- reduces generic/repetitive phrasing
 _DESCRIPTION_INPUT_CHAR_LIMIT = 500
 _CHAR_BUDGET_SAFETY_MARGIN = 10
 _EMOJI_RE = re.compile("[\U0001f300-\U0001faff\U00002600-\U000027bf\U0001f1e6-\U0001f1ff]")
@@ -406,9 +405,12 @@ class ProposalAgent:
         raw_milestone_count = milestone_count_for_days(days)
         milestone_count = raw_milestone_count if raw_milestone_count >= 2 else 0
 
-        structured_llm = self._llm.bind(
-            max_tokens=_MAX_OUTPUT_TOKENS, temperature=_LLM_TEMPERATURE
-        ).with_structured_output(_ProposalLLMOutput)
+        # No `temperature` override: Claude 4+ models (e.g. Sonnet 5) reject any
+        # non-default sampling parameter with a 400, so this must stay portable
+        # across providers rather than tuned for one.
+        structured_llm = self._llm.bind(max_tokens=_MAX_OUTPUT_TOKENS).with_structured_output(
+            _ProposalLLMOutput
+        )
 
         try:
             best_example = await find_best_matching_example(job, self._examples)
