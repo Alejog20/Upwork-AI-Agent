@@ -718,6 +718,7 @@ def _print_score_summary(job: JobPost, score: JobScore) -> None:
     table.add_row("Recommendation", score.recommendation.value)
     if score.red_flags:
         table.add_row("Red flags", ", ".join(score.red_flags))
+    table.add_row("URL", job.url)
     console.print(table)
 
 

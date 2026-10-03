@@ -45,6 +45,10 @@ class TestFormatJobMessage:
         message = format_job_message(fresh_job, fresh_score)
         assert "Red flags: none" in message
 
+    def test_includes_the_job_url(self, fresh_job: JobPost, fresh_score: JobScore) -> None:
+        message = format_job_message(fresh_job, fresh_score)
+        assert fresh_job.url in message
+
     def test_shows_red_flags_when_present(
         self, fresh_job: JobPost, profile: Profile, now: datetime
     ) -> None:

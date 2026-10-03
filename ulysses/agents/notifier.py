@@ -540,7 +540,8 @@ def format_job_message(job: JobPost, score: JobScore) -> str:
         f"📊 Proposals: {proposals_line}\n\n"
         f"🔗 Skills matched: {skills_line}\n"
         f"📁 Best repo match: {best_repo}\n\n"
-        f"⚠️ Red flags: {red_flags_line}"
+        f"⚠️ Red flags: {red_flags_line}\n\n"
+        f"👉 {job.url}"
     )
 
 
