@@ -17,10 +17,7 @@ output/
 .coverage
 htmlcov/
 
+# Local-only docs — never pushed, for privacy. AGENTS-sample.md is the public template.
 *.md
-!README.md
-!AGENTS-sample.md
-
-# Local-only docs for privacy. AGENTS-sample.md is the public template.
 CLAUDE.md
 AGENTS.md
