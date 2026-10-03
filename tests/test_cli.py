@@ -23,6 +23,7 @@ from ulysses.agents.scorer import score_job
 from ulysses.cli.main import (
     _make_build_handler,
     _make_draft_handler,
+    _make_telegram_job_handler,
     _read_pasted_job_listings,
     _shutdown_telegram,
     _start_telegram_with_retry,
@@ -258,6 +259,67 @@ class TestMakeBuildHandler:
 
         notifier.send_error_message.assert_awaited_once()
         prototype_agent.generate.assert_not_awaited()
+
+
+class TestMakeTelegramJobHandler:
+    """Unit tests for the Telegram free-text "pasted job" callback logic."""
+
+    async def test_processes_and_sends_summary(
+        self, mocker: MockerFixture, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        proposal = _mock_proposal()
+        prototype = _mock_prototype(fresh_job.id)
+        mocker.patch(
+            "ulysses.cli.main._process_pasted_job",
+            new=AsyncMock(return_value=(fresh_job, score, proposal, prototype)),
+        )
+        mocker.patch("ulysses.cli.main.build_prototype_zip", return_value=b"zip-bytes")
+        db = AsyncMock()
+        notifier = AsyncMock()
+
+        handler = _make_telegram_job_handler(db, profile, notifier)
+        await handler("a pasted job listing")
+
+        notifier.send_job_processed_summary.assert_awaited_once_with(
+            fresh_job, score, proposal, prototype, b"zip-bytes"
+        )
+
+    async def test_skip_recommended_job_sends_summary_with_no_zip_bytes(
+        self, mocker: MockerFixture, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        mocker.patch(
+            "ulysses.cli.main._process_pasted_job",
+            new=AsyncMock(return_value=(fresh_job, score, None, None)),
+        )
+        build_zip_mock = mocker.patch("ulysses.cli.main.build_prototype_zip")
+        db = AsyncMock()
+        notifier = AsyncMock()
+
+        handler = _make_telegram_job_handler(db, profile, notifier)
+        await handler("a weak job listing")
+
+        build_zip_mock.assert_not_called()
+        notifier.send_job_processed_summary.assert_awaited_once_with(
+            fresh_job, score, None, None, None
+        )
+
+    async def test_manual_job_parse_error_propagates_uncaught(
+        self, mocker: MockerFixture, profile: Profile
+    ) -> None:
+        mocker.patch(
+            "ulysses.cli.main._process_pasted_job",
+            new=AsyncMock(side_effect=ManualJobParseError("nope")),
+        )
+        db = AsyncMock()
+        notifier = AsyncMock()
+
+        handler = _make_telegram_job_handler(db, profile, notifier)
+        with pytest.raises(ManualJobParseError):
+            await handler("too short")
+
+        notifier.send_job_processed_summary.assert_not_awaited()
 
 
 class TestDraftCommand:

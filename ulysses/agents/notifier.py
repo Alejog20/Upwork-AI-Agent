@@ -6,6 +6,16 @@ Alerting is threshold-based:
     in a batch every `batch_interval_minutes`.
   - score < min_score_to_notify: not sent at all (the job is still persisted
     by the Scout Agent for later reference).
+
+This agent also owns the bot's two inbound surfaces: button presses
+(`callback_handler`, pre-existing) and free-text messages/commands
+(`message_handler`/`job_command_handler`/`refresh_command_handler`/
+`help_command_handler`, added for natural conversation). A pasted job still
+goes through the real pipeline via the injected `on_job_text_submitted`
+callback -- same decoupling convention as `on_draft_requested`/
+`on_build_requested`, so this module never imports `ProposalAgent`/
+`PrototypeAgent` directly. Plain chat is handled directly with `ChatAgent`,
+since it has no pipeline side effects to decouple.
 """
 
 from __future__ import annotations
@@ -20,14 +30,34 @@ from loguru import logger
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import NetworkError, RetryAfter
-from telegram.ext import CallbackQueryHandler, ContextTypes
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from ulysses.config.profile import ScoringConfig
-from ulysses.models import GeneratedPrototype, JobPost, JobScore, Recommendation
+from ulysses.agents.chat import (
+    CHAT_SYSTEM_PROMPT,
+    ChatAgent,
+    build_advisor_profile_summary,
+    build_job_context_message,
+    build_job_lookup_message,
+    build_queue_digest,
+)
+from ulysses.config.profile import Profile, ScoringConfig
+from ulysses.models import GeneratedProposal, GeneratedPrototype, JobPost, JobScore, Recommendation
 from ulysses.tools.db import JobStatus, UlyssesDB
+from ulysses.tools.manual_job import ManualJobParseError
 
 __all__ = ["InstantAlertHook", "NotifierAgent", "format_job_message"]
+
+_JOB_PASTE_MIN_CHARS = 100
+_MAX_CHAT_HISTORY_MESSAGES = 12  # ~6 exchanges -- a plain token-cost cap, not a context limit
+
+_HELP_TEXT = (
+    "I can:\n"
+    "- Score, draft, and build a demo for a job -- just paste the listing.\n"
+    "- Answer questions about your queue or strategy -- just ask.\n"
+    "- /job <url-or-id> -- pull one job's full detail into the conversation.\n"
+    "- /refresh -- re-pull the queue digest.\n"
+)
 
 _telegram_send_retry = retry(
     retry=retry_if_exception_type((NetworkError, RetryAfter)),
@@ -50,7 +80,22 @@ _ACTION_STATUS: dict[str, JobStatus] = {
 
 DraftHandler = Callable[[str], Awaitable[None]]
 BuildHandler = Callable[[str], Awaitable[None]]
+JobTextHandler = Callable[[str], Awaitable[None]]
 InstantAlertHook = Callable[[JobPost, JobScore], None]
+
+
+def _looks_like_job_paste(text: str) -> bool:
+    """Heuristic: long messages are attempted as job postings, short ones go straight to chat.
+
+    Not a guarantee -- `extract_job_from_text` has no "is this a job posting
+    at all" check of its own, only length floors on its own LLM output (see
+    `tools.manual_job`). Real Upwork postings run to hundreds of characters;
+    conversational questions are typically well under this. Callers must
+    still handle `ManualJobParseError` from a false positive (an unusually
+    long question) by falling back to chat -- this predicate only decides
+    whether to *try* extraction, not whether it will succeed.
+    """
+    return len(text) >= _JOB_PASTE_MIN_CHARS
 
 
 class NotifierAgent:
@@ -61,9 +106,11 @@ class NotifierAgent:
         bot_token: str,
         chat_id: str,
         db: UlyssesDB,
+        profile: Profile,
         on_draft_requested: DraftHandler | None = None,
         on_build_requested: BuildHandler | None = None,
         on_instant_alert: InstantAlertHook | None = None,
+        on_job_text_submitted: JobTextHandler | None = None,
     ) -> None:
         """Create a Notifier Agent bound to one Telegram chat.
 
@@ -72,6 +119,9 @@ class NotifierAgent:
             chat_id: The only chat ID this bot will ever send to or accept
                 callbacks from — validated in `handle_callback`.
             db: Persistence layer, used to record notification and user-action state.
+            profile: The freelancer's profile -- used to build the chat
+                session's system prompt (persona + queue digest + profile
+                summary).
             on_draft_requested: Async callback invoked with a job id when the
                 Draft or Regenerate button is pressed. Can also be set later
                 via `set_draft_handler` to avoid constructor ordering issues.
@@ -84,14 +134,24 @@ class NotifierAgent:
                 post a native macOS notification. Sync (not async) because
                 `rumps.notification()` is itself a plain sync call. Never
                 fires for batched or silently-archived jobs.
+            on_job_text_submitted: Async callback invoked with the raw text of
+                a Telegram message that looks like (and parses as) a pasted
+                job listing -- runs the same extract/score/draft/build
+                pipeline as `ulysses chat`. Can also be set later via
+                `set_job_text_handler`.
         """
         self._bot = Bot(token=bot_token)
         self._chat_id = str(chat_id)
         self._db = db
+        self._profile = profile
         self._batch_queue: list[tuple[JobPost, JobScore]] = []
         self._on_draft_requested = on_draft_requested
         self._on_build_requested = on_build_requested
         self._on_instant_alert = on_instant_alert
+        self._on_job_text_submitted = on_job_text_submitted
+        self._chat_agent: ChatAgent | None = None
+        self._chat_history: list[dict[str, str]] = []
+        self._chat_system_prompt: str | None = None
 
     def set_draft_handler(self, handler: DraftHandler) -> None:
         """Register the callback invoked when the Draft or Regenerate button is pressed."""
@@ -104,6 +164,14 @@ class NotifierAgent:
     def set_instant_alert_hook(self, hook: InstantAlertHook) -> None:
         """Register the callback invoked when a job clears the instant-alert threshold."""
         self._on_instant_alert = hook
+
+    def set_job_text_handler(self, handler: JobTextHandler) -> None:
+        """Register the callback invoked when a pasted job listing is recognized."""
+        self._on_job_text_submitted = handler
+
+    def _is_authorized(self, chat_id: str | None) -> bool:
+        """Whether an inbound update came from the one configured chat."""
+        return chat_id == self._chat_id
 
     @_telegram_send_retry
     async def _send_message(self, **kwargs: Any) -> None:
@@ -119,6 +187,26 @@ class NotifierAgent:
     def callback_handler(self) -> CallbackQueryHandler:
         """A `python-telegram-bot` handler for the inline action buttons."""
         return CallbackQueryHandler(self.handle_callback)
+
+    @property
+    def message_handler(self) -> MessageHandler:
+        """A `python-telegram-bot` handler for plain-text messages (chat and job pastes)."""
+        return MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message)
+
+    @property
+    def job_command_handler(self) -> CommandHandler:
+        """A `python-telegram-bot` handler for `/job <url-or-id>`."""
+        return CommandHandler("job", self.handle_job_command)
+
+    @property
+    def refresh_command_handler(self) -> CommandHandler:
+        """A `python-telegram-bot` handler for `/refresh`."""
+        return CommandHandler("refresh", self.handle_refresh_command)
+
+    @property
+    def help_command_handler(self) -> CommandHandler:
+        """A `python-telegram-bot` handler for `/start` and `/help`."""
+        return CommandHandler(["start", "help"], self.handle_help_command)
 
     async def handle_scored_job(
         self, job: JobPost, score: JobScore, thresholds: ScoringConfig
@@ -181,7 +269,7 @@ class NotifierAgent:
             return
 
         chat_id = str(query.message.chat_id) if query.message else None
-        if chat_id != self._chat_id:
+        if not self._is_authorized(chat_id):
             logger.warning("Ignoring callback from unauthorized chat_id={}", chat_id)
             await query.answer("Unauthorized", show_alert=True)
             return
@@ -203,6 +291,146 @@ class NotifierAgent:
             logger.bind(job_id=job_id, agent="notifier").info(
                 "User requested: {} (not yet implemented)", action
             )
+
+    async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle a plain-text message: either a pasted job listing or a chat turn.
+
+        Long messages are attempted as job postings first (see
+        `_looks_like_job_paste`); a `ManualJobParseError` from a false
+        positive falls through to chat instead of surfacing an error -- the
+        user never typed a command, so there's nothing to tell them they got
+        "wrong".
+        """
+        message = update.message
+        if message is None or message.text is None:
+            return
+        if not self._is_authorized(str(message.chat_id)):
+            logger.warning("Ignoring message from unauthorized chat_id={}", message.chat_id)
+            return
+
+        text = message.text.strip()
+        if not text:
+            return
+
+        if _looks_like_job_paste(text) and self._on_job_text_submitted is not None:
+            try:
+                await self._on_job_text_submitted(text)
+                return
+            except ManualJobParseError:
+                logger.info("Long message didn't parse as a job -- treating it as chat instead")
+            except Exception:
+                logger.exception("Failed to process a pasted job listing from Telegram")
+                await self.send_error_message("Something went wrong processing that listing.")
+                return
+
+        await self._reply_in_chat(text)
+
+    async def handle_job_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle `/job <url-or-id>`: pull one job's full detail into the conversation."""
+        message = update.message
+        if message is None or not self._is_authorized(str(message.chat_id)):
+            return
+
+        identifier = context.args[0] if context.args else None
+        if not identifier:
+            await self._send_message(chat_id=self._chat_id, text="Usage: /job <url-or-id>")
+            return
+
+        detail = await build_job_lookup_message(self._db, identifier)
+        if detail is None:
+            await self._send_message(
+                chat_id=self._chat_id, text=f"No job found matching: {identifier}"
+            )
+            return
+
+        self._chat_history.append({"role": "user", "content": detail})
+        self._chat_history.append(
+            {"role": "assistant", "content": "Got it, I have that job's details now."}
+        )
+        await self._send_message(chat_id=self._chat_id, text=f"Loaded details for {identifier}.")
+
+    async def handle_refresh_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle `/refresh`: re-pull the queue digest into the conversation."""
+        message = update.message
+        if message is None or not self._is_authorized(str(message.chat_id)):
+            return
+
+        jobs = await self._db.list_jobs()
+        self._chat_history.append({"role": "user", "content": build_queue_digest(jobs)})
+        self._chat_history.append({"role": "assistant", "content": "Queue digest refreshed."})
+        await self._send_message(chat_id=self._chat_id, text="Queue digest refreshed.")
+
+    async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle `/start` and `/help`: a short capability summary."""
+        message = update.message
+        if message is None or not self._is_authorized(str(message.chat_id)):
+            return
+        await self._send_message(chat_id=self._chat_id, text=_HELP_TEXT)
+
+    async def _reply_in_chat(self, text: str) -> None:
+        if self._chat_agent is None:
+            self._chat_agent = ChatAgent()
+        if self._chat_system_prompt is None:
+            jobs = await self._db.list_jobs()
+            self._chat_system_prompt = (
+                f"{CHAT_SYSTEM_PROMPT}\n\n"
+                f"{build_advisor_profile_summary(self._profile)}\n\n"
+                f"{build_queue_digest(jobs)}"
+            )
+
+        try:
+            reply = await self._chat_agent.reply(
+                self._chat_history, text, system_prompt=self._chat_system_prompt
+            )
+        except Exception:
+            logger.exception("Chat reply failed")
+            await self.send_error_message("Something went wrong -- see the log for details.")
+            return
+
+        await self._send_message(chat_id=self._chat_id, text=reply)
+        self._chat_history.append({"role": "user", "content": text})
+        self._chat_history.append({"role": "assistant", "content": reply})
+        del self._chat_history[:-_MAX_CHAT_HISTORY_MESSAGES]
+
+    async def send_job_processed_summary(
+        self,
+        job: JobPost,
+        score: JobScore,
+        proposal: GeneratedProposal | None,
+        prototype: GeneratedPrototype | None,
+        prototype_zip_bytes: bytes | None,
+    ) -> None:
+        """Send a pasted-and-processed job's results to Telegram.
+
+        `prototype_zip_bytes` is built by the caller (via
+        `agents.prototype.build_prototype_zip`), same division of labor as
+        `send_prototype_zip` already requires -- this module stays decoupled
+        from `ulysses.agents.prototype`. Mirrors what `ulysses chat` prints
+        to the console for the same pipeline output, just sent as Telegram
+        messages instead. Also pushes the job's context into the chat
+        history, so an immediate follow-up ("make the hook punchier") has it
+        without needing `/job`.
+        """
+        await self._send_message(
+            chat_id=self._chat_id, text=format_job_message(job, score), parse_mode=ParseMode.HTML
+        )
+        if proposal is None or prototype is None or prototype_zip_bytes is None:
+            await self._send_message(
+                chat_id=self._chat_id,
+                text="Not drafting a proposal or building a demo for this one -- SKIP recommended.",
+            )
+        else:
+            await self.send_proposal_draft(job.id, proposal.full_text)
+            await self.send_prototype_zip(job.id, prototype, prototype_zip_bytes)
+
+        self._chat_history.append(
+            {"role": "user", "content": build_job_context_message(job, score, proposal, prototype)}
+        )
+        self._chat_history.append(
+            {"role": "assistant", "content": "Got it, I have that job's details now."}
+        )
 
     async def _request_draft(self, job_id: str, action: str) -> None:
         if self._on_draft_requested is None:

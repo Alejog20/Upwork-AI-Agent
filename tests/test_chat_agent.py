@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from ulysses.agents.chat import (
     CHAT_SYSTEM_PROMPT,
     ChatAgent,
     build_advisor_profile_summary,
     build_job_context_message,
+    build_job_lookup_message,
     build_queue_digest,
 )
 from ulysses.agents.scorer import score_job
 from ulysses.config.profile import Profile
-from ulysses.models import GeneratedProposal, GeneratedPrototype, JobPost
-from ulysses.tools.db import Job, JobStatus
+from ulysses.models import GeneratedProposal, GeneratedPrototype, JobPost, JobScore
+from ulysses.tools.db import Job, JobStatus, UlyssesDB
 
 
 def _mock_llm(content: str) -> MagicMock:
@@ -210,3 +214,101 @@ class TestBuildAdvisorProfileSummary:
         assert profile.skills.primary[0] in summary
         assert f"${profile.scoring.target_budget_min:.0f}" in summary
         assert f"${profile.scoring.target_budget_max:.0f}" in summary
+
+
+@pytest.fixture
+async def db(tmp_path: Path) -> UlyssesDB:
+    database = UlyssesDB(tmp_path / "ulysses-test.db")
+    await database.init()
+    yield database
+    await database.dispose()
+
+
+async def _seed_full_job(db: UlyssesDB, job: JobPost, score: JobScore) -> None:
+    await db.upsert_job(
+        Job(
+            id=job.id,
+            title=job.title,
+            description=job.description,
+            url=job.url,
+            score=score.total_score,
+            category=score.gig_category.value,
+            status=JobStatus.NEW,
+            posted_at=job.posted_at,
+            job_json=job.model_dump_json(),
+            score_json=score.model_dump_json(),
+        )
+    )
+
+
+class TestBuildJobLookupMessage:
+    async def test_returns_none_for_unknown_identifier(self, db: UlyssesDB) -> None:
+        assert await build_job_lookup_message(db, "does-not-exist") is None
+
+    async def test_looks_up_by_id_or_url(
+        self, db: UlyssesDB, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        await _seed_full_job(db, fresh_job, score)
+
+        by_id = await build_job_lookup_message(db, fresh_job.id)
+        by_url = await build_job_lookup_message(db, fresh_job.url)
+
+        assert by_id is not None
+        assert fresh_job.title in by_id
+        assert by_url is not None
+        assert fresh_job.title in by_url
+
+    async def test_returns_none_when_job_predates_full_json_storage(self, db: UlyssesDB) -> None:
+        await db.upsert_job(
+            Job(
+                id="pre-phase-2",
+                title="An old job",
+                description="desc",
+                url="manual://pre-phase-2",
+                score=50.0,
+                category="tier2",
+                status=JobStatus.NEW,
+                posted_at=datetime.now(UTC),
+            )
+        )
+
+        assert await build_job_lookup_message(db, "pre-phase-2") is None
+
+    async def test_includes_most_recent_proposal_draft(
+        self, db: UlyssesDB, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        await _seed_full_job(db, fresh_job, score)
+        await db.add_proposal_draft(fresh_job.id, "An older draft.")
+        await db.add_proposal_draft(fresh_job.id, "The newest draft.")
+
+        message = await build_job_lookup_message(db, fresh_job.id)
+
+        assert message is not None
+        assert "The newest draft." in message
+        assert "Most recent saved proposal draft:" in message
+
+    async def test_includes_prototype_readme_when_present(
+        self, db: UlyssesDB, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        await _seed_full_job(db, fresh_job, score)
+        await db.add_prototype_file(fresh_job.id, "README.md", "# A generated demo README.")
+
+        message = await build_job_lookup_message(db, fresh_job.id)
+
+        assert message is not None
+        assert "# A generated demo README." in message
+
+    async def test_omits_draft_and_readme_sections_when_neither_exists(
+        self, db: UlyssesDB, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        await _seed_full_job(db, fresh_job, score)
+
+        message = await build_job_lookup_message(db, fresh_job.id)
+
+        assert message is not None
+        assert "Most recent saved proposal draft:" not in message
+        assert "Prototype README:" not in message
