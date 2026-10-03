@@ -2,10 +2,50 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ulysses.models import BudgetType
 from ulysses.tools.job_parser import JobParseError, parse_job_email
+
+# Mirrors the real "New job alert: ..." template (confirmed against live
+# emails, 2026-10): label-first budget ("Fixed-price • $200.00"), skill
+# pills linking to a skill-search page rather than a text heading, the
+# description truncated by an inline "more" link with a literal "Job
+# Description:" marker glued onto the repeated title, and no relative
+# "posted N ago" phrase anywhere -- `posted_at` must come from `received_at`.
+CURRENT_TEMPLATE_HTML = """
+<html><body>
+<table><tr><td>
+<a href="https://www.upwork.com/jobs/~022082515063060880349?link=title&utm_source=mailgun">
+Python Developer Needed for Web Scraping</a>
+</td></tr></table>
+<table><tr><td>
+<div>Fixed-price • $200.00</div>
+</td></tr></table>
+<table><tr><td>
+<div>Python Developer Needed for Web ScrapingJob Description:I am looking for an experienced
+Python developer to build a scraper for real estate listings.
+<a href="https://www.upwork.com/jobs/~022082515063060880349?link=more">more</a></div>
+</td></tr></table>
+<table><tr><td>
+<div>
+<a href="https://www.upwork.com/nx/search/jobs/?frkscc=abc">Python</a>
+<a href="https://www.upwork.com/nx/search/jobs/?frkscc=def">Web Scraping</a>
+<a href="https://www.upwork.com/nx/search/jobs/?frkscc=ghi">BeautifulSoup</a>
+</div>
+</td></tr></table>
+<div>Payment verified • 4.39 • $770 spent • United States</div>
+</body></html>
+"""
+
+CURRENT_TEMPLATE_HOURLY_HTML = """
+<html><body>
+<a href="https://www.upwork.com/jobs/~022082515063060880350?link=title">
+Ongoing bookkeeping support</a>
+<div>Hourly • $20.00 - $35.00</div>
+<div>Payment verified • 4.90 • $12,000 spent • Canada</div>
+</body></html>
+"""
 
 FULL_EMAIL_HTML = """
 <html><body>
@@ -187,3 +227,75 @@ class TestJobIdFallback:
         first, _ = parse_job_email(html)
         second, _ = parse_job_email(html)
         assert first.id == second.id
+
+
+class TestCurrentTemplate:
+    """The real "New job alert: ..." template, confirmed against live emails."""
+
+    def test_parses_without_error(self) -> None:
+        job, error = parse_job_email(CURRENT_TEMPLATE_HTML)
+        assert error is None
+        assert job is not None
+
+    def test_strips_tracking_params_from_the_url(self) -> None:
+        job, _ = parse_job_email(CURRENT_TEMPLATE_HTML)
+        assert job.url == "https://www.upwork.com/jobs/~022082515063060880349"
+        assert "utm_source" not in job.url
+        assert "&" not in job.url
+
+    def test_extracts_the_real_description_not_the_boilerplate_preamble(self) -> None:
+        job, _ = parse_job_email(CURRENT_TEMPLATE_HTML)
+        assert "experienced" in job.description.lower()
+        assert "job description" not in job.description.lower()
+        assert "new job alert" not in job.description.lower()
+
+    def test_extracts_label_first_fixed_budget(self) -> None:
+        job, _ = parse_job_email(CURRENT_TEMPLATE_HTML)
+        assert job.budget.type == BudgetType.FIXED
+        assert job.budget.min_amount == 200.0
+        assert job.budget.max_amount == 200.0
+
+    def test_extracts_skill_pills_not_search_link_noise(self) -> None:
+        job, _ = parse_job_email(CURRENT_TEMPLATE_HTML)
+        assert job.skills_required == ["Python", "Web Scraping", "BeautifulSoup"]
+
+    def test_excludes_the_overflow_count_pill(self) -> None:
+        html = CURRENT_TEMPLATE_HTML.replace(
+            '<a href="https://www.upwork.com/nx/search/jobs/?frkscc=ghi">BeautifulSoup</a>',
+            '<a href="https://www.upwork.com/nx/search/jobs/?frkscc=ghi">BeautifulSoup</a>'
+            '\n<a href="https://www.upwork.com/nx/search/jobs/?frkscc=xyz">+2</a>',
+        )
+        job, _ = parse_job_email(html)
+        assert job.skills_required == ["Python", "Web Scraping", "BeautifulSoup"]
+
+    def test_payment_verified_without_the_word_method(self) -> None:
+        job, _ = parse_job_email(CURRENT_TEMPLATE_HTML)
+        assert job.payment_verified is True
+
+    def test_posted_at_falls_back_to_received_at_when_no_relative_phrase(self) -> None:
+        received_at = datetime(2026, 7, 29, 17, 16, 21, tzinfo=UTC)
+        job, _ = parse_job_email(CURRENT_TEMPLATE_HTML, received_at=received_at)
+        assert job.posted_at == received_at
+
+    def test_posted_at_falls_back_to_now_when_received_at_is_not_given(self) -> None:
+        job, _ = parse_job_email(CURRENT_TEMPLATE_HTML)
+        age_seconds = (datetime.now(UTC) - job.posted_at).total_seconds()
+        assert 0 <= age_seconds <= 5
+
+    def test_explicit_posted_ago_phrase_is_anchored_to_received_at_not_now(self) -> None:
+        # The "posted N ago" phrase, when present, was itself written
+        # relative to when the email was sent -- processing it days later
+        # must not silently re-anchor it to the processing moment.
+        html = CURRENT_TEMPLATE_HTML.replace(
+            "<div>Fixed-price • $200.00</div>",
+            "<div>Fixed-price • $200.00 Posted 8 minutes ago</div>",
+        )
+        received_at = datetime.now(UTC) - timedelta(days=10)
+        job, _ = parse_job_email(html, received_at=received_at)
+        assert abs((job.posted_at - (received_at - timedelta(minutes=8))).total_seconds()) < 1
+
+    def test_hourly_label_first_budget(self) -> None:
+        job, _ = parse_job_email(CURRENT_TEMPLATE_HOURLY_HTML)
+        assert job.budget.type == BudgetType.HOURLY
+        assert job.budget.min_amount == 20.0
+        assert job.budget.max_amount == 35.0

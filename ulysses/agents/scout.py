@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 from loguru import logger
 
@@ -23,6 +25,19 @@ from ulysses.tools.job_parser import parse_job_email
 __all__ = ["ScoredJobCallback", "ScoutAgent"]
 
 ScoredJobCallback = Callable[[JobPost, JobScore], Awaitable[None]]
+
+
+def _parse_received_at(received_at_header: str) -> datetime | None:
+    """Parse an email's `Date` header, tolerating malformed/missing headers."""
+    if not received_at_header:
+        return None
+    try:
+        parsed = parsedate_to_datetime(received_at_header)
+    except TypeError, ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 class ScoutAgent:
@@ -52,9 +67,20 @@ class ScoutAgent:
 
         scored_jobs: list[tuple[JobPost, JobScore]] = []
         for raw_email in raw_emails:
-            job, error = parse_job_email(raw_email.html_body)
+            received_at = _parse_received_at(raw_email.received_at_header)
+            job, error = parse_job_email(raw_email.html_body, received_at=received_at)
             if error is not None:
                 logger.warning("Failed to parse email uid={}: {}", raw_email.uid, error)
+                continue
+
+            age_hours = (datetime.now(UTC) - job.posted_at).total_seconds() / 3600
+            if age_hours > self._profile.scoring.skip_if_posted_hours_ago:
+                logger.debug(
+                    "Skipping stale job ({:.1f}h > {}h limit): {}",
+                    age_hours,
+                    self._profile.scoring.skip_if_posted_hours_ago,
+                    job.url,
+                )
                 continue
 
             if await self._db.job_exists(job.url):

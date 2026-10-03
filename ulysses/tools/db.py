@@ -213,6 +213,32 @@ class UlyssesDB:
             session.add(job)
             await session.commit()
 
+    async def delete_job(self, job_id: str) -> bool:
+        """Permanently delete a job and its associated drafts/files/outcome.
+
+        Distinct from `update_status(..., JobStatus.ARCHIVED)`: archiving is
+        for a job you're done with but whose data was valid; this is for
+        purging bad data outright (e.g. rows ingested by a parser bug), and
+        there is no undo. SQLite doesn't cascade foreign keys automatically
+        here, so related `ProposalDraft`/`PrototypeFile`/`Outcome` rows are
+        deleted explicitly to avoid leaving them orphaned.
+
+        Returns:
+            `True` if a job with this id existed and was deleted, `False` if
+            there was nothing to delete.
+        """
+        async with self.session() as session:
+            job = await session.get(Job, job_id)
+            if job is None:
+                return False
+            for model in (ProposalDraft, PrototypeFile, Outcome):
+                rows = (await session.exec(select(model).where(model.job_id == job_id))).all()
+                for row in rows:
+                    await session.delete(row)
+            await session.delete(job)
+            await session.commit()
+            return True
+
     async def record_outcome(
         self,
         job_id: str,

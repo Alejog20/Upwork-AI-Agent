@@ -241,3 +241,39 @@ class TestStats:
         assert stats["new"] == 2
         assert stats["skipped"] == 1
         assert stats["total"] == 3
+
+
+class TestDeleteJob:
+    async def test_deletes_an_existing_job_and_returns_true(self, db: UlyssesDB) -> None:
+        await db.upsert_job(_job("a"))
+
+        deleted = await db.delete_job("a")
+
+        assert deleted is True
+        assert await db.get_job("a") is None
+
+    async def test_returns_false_for_an_unknown_job(self, db: UlyssesDB) -> None:
+        assert await db.delete_job("does-not-exist") is False
+
+    async def test_cascades_to_proposal_drafts_prototype_files_and_outcome(
+        self, db: UlyssesDB
+    ) -> None:
+        await db.upsert_job(_job("a"))
+        await db.add_proposal_draft("a", "draft text")
+        await db.add_prototype_file("a", "demo.py", "print('hi')")
+        await db.record_outcome("a", won=True)
+
+        await db.delete_job("a")
+
+        assert await db.get_proposal_drafts("a") == []
+        assert await db.get_prototype_files("a") == []
+        assert await db.list_outcomes() == []
+
+    async def test_leaves_other_jobs_untouched(self, db: UlyssesDB) -> None:
+        await db.upsert_job(_job("a"))
+        await db.upsert_job(_job("b"))
+
+        await db.delete_job("a")
+
+        assert await db.get_job("a") is None
+        assert await db.get_job("b") is not None
