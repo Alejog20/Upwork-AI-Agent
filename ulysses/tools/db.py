@@ -91,6 +91,7 @@ class Outcome(SQLModel, table=True):
     job_id: str = Field(foreign_key="job.id", index=True, unique=True)
     won: bool
     contract_value_usd: float | None = None
+    connects_spent: int | None = None
     note: str | None = None
     closed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -245,6 +246,7 @@ class UlyssesDB:
         *,
         won: bool,
         contract_value_usd: float | None = None,
+        connects_spent: int | None = None,
         note: str | None = None,
     ) -> Outcome:
         """Record the final won/lost outcome for a job, upserting if one already exists.
@@ -258,6 +260,7 @@ class UlyssesDB:
             if existing is not None:
                 existing.won = won
                 existing.contract_value_usd = contract_value_usd
+                existing.connects_spent = connects_spent
                 existing.note = note
                 existing.closed_at = datetime.now(UTC)
                 session.add(existing)
@@ -266,7 +269,11 @@ class UlyssesDB:
                 outcome = existing
             else:
                 outcome = Outcome(
-                    job_id=job_id, won=won, contract_value_usd=contract_value_usd, note=note
+                    job_id=job_id,
+                    won=won,
+                    contract_value_usd=contract_value_usd,
+                    connects_spent=connects_spent,
+                    note=note,
                 )
                 session.add(outcome)
                 await session.commit()

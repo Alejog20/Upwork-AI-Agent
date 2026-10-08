@@ -15,6 +15,7 @@ from ulysses.agents.scorer import score_job
 from ulysses.config.profile import Profile
 from ulysses.models import GeneratedProposal, GeneratedPrototype, JobPost, JobScore
 from ulysses.tools.db import JobStatus
+from ulysses.tools.events import DashboardEventBus
 from ulysses.tools.manual_job import ManualJobParseError
 
 
@@ -284,6 +285,44 @@ class TestNotifierAgentCallbackHandling:
         notifier._db.update_status.assert_not_awaited()
         update.callback_query.answer.assert_awaited_once_with("Unauthorized", show_alert=True)
 
+    async def test_skip_action_broadcasts_job_updated_when_events_given(
+        self, mocker: MockerFixture, profile: Profile
+    ) -> None:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        db = MagicMock()
+        db.update_status = AsyncMock()
+        events = AsyncMock(spec=DashboardEventBus)
+        notifier = NotifierAgent(
+            bot_token="fake-token", chat_id="123456", db=db, profile=profile, events=events
+        )
+        update = self._make_update("123456", "skip:job-1")
+
+        await notifier.handle_callback(update, MagicMock())
+
+        events.broadcast.assert_awaited_once_with({"type": "job_updated", "job_id": "job-1"})
+
+    async def test_archive_action_broadcasts_job_updated_when_events_given(
+        self, mocker: MockerFixture, profile: Profile
+    ) -> None:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        db = MagicMock()
+        db.update_status = AsyncMock()
+        events = AsyncMock(spec=DashboardEventBus)
+        notifier = NotifierAgent(
+            bot_token="fake-token", chat_id="123456", db=db, profile=profile, events=events
+        )
+        update = self._make_update("123456", "archive:job-2")
+
+        await notifier.handle_callback(update, MagicMock())
+
+        events.broadcast.assert_awaited_once_with({"type": "job_updated", "job_id": "job-2"})
+
+    async def test_draft_action_does_not_broadcast_when_no_events_given(
+        self, notifier: NotifierAgent
+    ) -> None:
+        update = self._make_update("123456", "skip:job-1")
+        await notifier.handle_callback(update, MagicMock())  # should not raise with events=None
+
 
 class TestSendProposalDraft:
     @pytest.fixture
@@ -306,6 +345,22 @@ class TestSendProposalDraft:
         assert buttons[0].callback_data == "copy:job-9"
         assert buttons[1].callback_data == "regenerate:job-9"
         notifier._db.update_status.assert_awaited_once_with("job-9", JobStatus.DRAFTED)
+
+    async def test_broadcasts_job_updated_when_events_given(
+        self, mocker: MockerFixture, profile: Profile
+    ) -> None:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        db = MagicMock()
+        db.update_status = AsyncMock()
+        events = AsyncMock(spec=DashboardEventBus)
+        notifier = NotifierAgent(
+            bot_token="fake-token", chat_id="123456", db=db, profile=profile, events=events
+        )
+        notifier._bot.send_message = AsyncMock()
+
+        await notifier.send_proposal_draft("job-9", "draft body text")
+
+        events.broadcast.assert_awaited_once_with({"type": "job_updated", "job_id": "job-9"})
 
 
 class TestSendPrototypeZip:
@@ -340,6 +395,32 @@ class TestSendPrototypeZip:
             chat_id="123456", text="# Demo README content"
         )
         notifier._db.update_status.assert_awaited_once_with("job-9", JobStatus.BUILT)
+
+    async def test_broadcasts_job_updated_when_events_given(
+        self, mocker: MockerFixture, profile: Profile
+    ) -> None:
+        mocker.patch("ulysses.agents.notifier.Bot")
+        db = MagicMock()
+        db.update_status = AsyncMock()
+        events = AsyncMock(spec=DashboardEventBus)
+        notifier = NotifierAgent(
+            bot_token="fake-token", chat_id="123456", db=db, profile=profile, events=events
+        )
+        notifier._bot.send_document = AsyncMock()
+        notifier._bot.send_message = AsyncMock()
+        prototype = GeneratedPrototype(
+            job_id="job-9",
+            category="scraper",
+            demo_script="print('hi')",
+            requirements_txt="requests==2.32.3\n",
+            readme_md="# Demo README content",
+            config_example_env="# none needed\n",
+            zip_filename="ulysses_demo_job-9.zip",
+        )
+
+        await notifier.send_prototype_zip("job-9", prototype, b"zip-bytes")
+
+        events.broadcast.assert_awaited_once_with({"type": "job_updated", "job_id": "job-9"})
 
 
 class TestSendErrorMessage:

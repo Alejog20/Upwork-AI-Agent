@@ -14,6 +14,7 @@ from ulysses.models import JobScore
 from ulysses.tools.db import Job, Outcome
 
 __all__ = [
+    "average_connects_spent_per_win",
     "average_score_won_vs_lost",
     "scoring_weight_suggestions",
     "win_rate_by_category",
@@ -77,6 +78,20 @@ def average_score_won_vs_lost(pairs: list[tuple[Job, Outcome]]) -> dict[str, flo
         "won": round(mean(won_scores), 2) if won_scores else 0.0,
         "lost": round(mean(lost_scores), 2) if lost_scores else 0.0,
     }
+
+
+def average_connects_spent_per_win(pairs: list[tuple[Job, Outcome]]) -> float | None:
+    """Return the average Connects spent across won jobs with a recorded `connects_spent`.
+
+    `None` if no won outcome has a recorded value yet -- distinct from `0.0`,
+    which would wrongly imply winning costs nothing.
+    """
+    spent = [
+        outcome.connects_spent
+        for _, outcome in pairs
+        if outcome.won and outcome.connects_spent is not None
+    ]
+    return round(mean(spent), 1) if spent else None
 
 
 def scoring_weight_suggestions(

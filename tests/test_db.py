@@ -145,6 +145,30 @@ class TestAdditiveMigration:
         finally:
             await migrated_db.dispose()
 
+    async def test_init_adds_connects_spent_to_a_pre_existing_outcome_table(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "old-outcome-schema.db"
+
+        # Simulate an Outcome table from before connects_spent existed.
+        connection = sqlite3.connect(db_path)
+        connection.execute(
+            "CREATE TABLE outcome ("
+            "id INTEGER PRIMARY KEY, job_id VARCHAR, won BOOLEAN, "
+            "contract_value_usd FLOAT, note VARCHAR, closed_at DATETIME)"
+        )
+        connection.commit()
+        connection.close()
+
+        migrated_db = UlyssesDB(db_path)
+        await migrated_db.init()
+        try:
+            await migrated_db.upsert_job(_job())
+            outcome = await migrated_db.record_outcome("job-1", won=True, connects_spent=12)
+            assert outcome.connects_spent == 12
+        finally:
+            await migrated_db.dispose()
+
 
 class TestGetFullJob:
     async def test_reconstructs_job_and_score_from_json_columns(
@@ -190,6 +214,23 @@ class TestOutcomes:
         assert outcome.note == "great client"
         job = await db.get_job("job-1")
         assert job.status == JobStatus.WON
+
+    async def test_record_outcome_persists_connects_spent(self, db: UlyssesDB) -> None:
+        await db.upsert_job(_job())
+
+        outcome = await db.record_outcome("job-1", won=True, connects_spent=8)
+
+        assert outcome.connects_spent == 8
+
+    async def test_record_outcome_updates_connects_spent_on_repeat_call(
+        self, db: UlyssesDB
+    ) -> None:
+        await db.upsert_job(_job())
+        await db.record_outcome("job-1", won=False, connects_spent=4)
+
+        outcome = await db.record_outcome("job-1", won=True, connects_spent=9)
+
+        assert outcome.connects_spent == 9
 
     async def test_record_outcome_updates_job_status_to_lost(self, db: UlyssesDB) -> None:
         await db.upsert_job(_job())

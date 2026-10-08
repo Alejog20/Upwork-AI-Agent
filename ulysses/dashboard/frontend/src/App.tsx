@@ -1,0 +1,79 @@
+import { useEffect, useState } from 'react'
+import './App.css'
+import { connectEvents, getAnalytics, getStats } from './api'
+import { FollowUpView } from './components/FollowUpView'
+import { InsightsPanel } from './components/InsightsPanel'
+import { JobFeed } from './components/JobFeed'
+import { NextUpCard } from './components/NextUpCard'
+import { StatsBar } from './components/StatsBar'
+import type { Analytics, Stats } from './types'
+
+type Tab = 'feed' | 'next-up' | 'followup' | 'insights'
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>('feed')
+  const [stats, setStats] = useState<Stats | null>(null)
+  const [analytics, setAnalytics] = useState<Analytics | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [live, setLive] = useState(false)
+
+  useEffect(() => {
+    getStats().then(setStats).catch(() => undefined)
+  }, [refreshKey])
+
+  useEffect(() => {
+    if (tab === 'insights') {
+      getAnalytics().then(setAnalytics).catch(() => undefined)
+    }
+  }, [tab, refreshKey])
+
+  useEffect(() => {
+    const disconnect = connectEvents(() => {
+      setLive(true)
+      setRefreshKey((key) => key + 1)
+      setTimeout(() => setLive(false), 1500)
+    })
+    return disconnect
+  }, [])
+
+  return (
+    <div className="app">
+      <header className="app__header">
+        <h1>🗺 Ulysses</h1>
+        <span className={`live-dot ${live ? 'live-dot--active' : ''}`} title="Live updates" />
+        <nav className="app__tabs">
+          <button className={tab === 'feed' ? 'tab tab--active' : 'tab'} onClick={() => setTab('feed')}>
+            Job Feed
+          </button>
+          <button
+            className={tab === 'next-up' ? 'tab tab--active' : 'tab'}
+            onClick={() => setTab('next-up')}
+          >
+            Next Up
+          </button>
+          <button
+            className={tab === 'followup' ? 'tab tab--active' : 'tab'}
+            onClick={() => setTab('followup')}
+          >
+            Needs Follow-Up
+          </button>
+          <button
+            className={tab === 'insights' ? 'tab tab--active' : 'tab'}
+            onClick={() => setTab('insights')}
+          >
+            Insights
+          </button>
+        </nav>
+      </header>
+
+      <StatsBar stats={stats} />
+
+      <main className="app__main">
+        {tab === 'feed' && <JobFeed refreshKey={refreshKey} />}
+        {tab === 'next-up' && <NextUpCard refreshKey={refreshKey} />}
+        {tab === 'followup' && <FollowUpView refreshKey={refreshKey} />}
+        {tab === 'insights' && <InsightsPanel analytics={analytics} />}
+      </main>
+    </div>
+  )
+}
