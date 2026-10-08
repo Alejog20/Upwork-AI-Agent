@@ -46,6 +46,28 @@ class TestFetchNewUpworkEmails:
         mock_conn.select.assert_called_once_with("INBOX")
         mock_conn.logout.assert_called_once()
 
+    async def test_search_criteria_excludes_non_job_alert_upwork_mail(
+        self, reader: EmailReader
+    ) -> None:
+        """Only "New job alert:"-subject mail should be searched for.
+
+        `FROM "upwork.com"` alone also matches messages/payments/milestones/
+        security emails from the same `donotreply@upwork.com` sender --
+        confirmed against a real mailbox these never contain a job link, so
+        without the subject filter they'd fail `parse_job_email` and get
+        re-logged as warnings on every single poll forever (BODY.PEEK never
+        marks them \\Seen).
+        """
+        mock_conn = MagicMock()
+        mock_conn.search.return_value = ("OK", [b""])
+
+        with patch("ulysses.tools.email_reader.imaplib2.IMAP4_SSL", return_value=mock_conn):
+            await reader.fetch_new_upwork_emails()
+
+        mock_conn.search.assert_called_once_with(
+            None, '(UNSEEN FROM "upwork.com" SUBJECT "New job alert")'
+        )
+
     async def test_returns_empty_list_on_search_failure(self, reader: EmailReader) -> None:
         mock_conn = MagicMock()
         mock_conn.search.return_value = ("NO", [None])
