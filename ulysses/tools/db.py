@@ -26,6 +26,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from ulysses.models import JobPost, JobScore
 
 __all__ = [
+    "ChatMessage",
     "Job",
     "JobStatus",
     "Outcome",
@@ -94,6 +95,23 @@ class Outcome(SQLModel, table=True):
     connects_spent: int | None = None
     note: str | None = None
     closed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ChatMessage(SQLModel, table=True):
+    """One turn in a persisted dashboard chat thread.
+
+    `thread_id` is either the reserved sentinel `"__general__"` (the
+    queue-wide copilot chat) or a real `job.id` (a per-job chat) -- a plain
+    string column, not a foreign key, so a per-job thread survives even if
+    the job row is later deleted, and a general-thread message isn't forced
+    to reference any job at all.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    thread_id: str = Field(index=True)
+    role: str
+    content: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class UlyssesDB:
@@ -336,6 +354,35 @@ class UlyssesDB:
                 .order_by(PrototypeFile.created_at)
             )
             return list(result.all())
+
+    async def add_chat_message(self, thread_id: str, role: str, content: str) -> ChatMessage:
+        """Persist one turn of a dashboard chat thread."""
+        async with self.session() as session:
+            message = ChatMessage(thread_id=thread_id, role=role, content=content)
+            session.add(message)
+            await session.commit()
+            await session.refresh(message)
+            return message
+
+    async def get_chat_messages(self, thread_id: str) -> list[ChatMessage]:
+        """List every message in a chat thread, oldest first."""
+        async with self.session() as session:
+            result = await session.exec(
+                select(ChatMessage)
+                .where(ChatMessage.thread_id == thread_id)
+                .order_by(ChatMessage.created_at)
+            )
+            return list(result.all())
+
+    async def clear_chat_thread(self, thread_id: str) -> None:
+        """Delete every message in a chat thread -- powers a "New conversation" action."""
+        async with self.session() as session:
+            result = await session.exec(
+                select(ChatMessage).where(ChatMessage.thread_id == thread_id)
+            )
+            for message in result.all():
+                await session.delete(message)
+            await session.commit()
 
     async def stats(self) -> dict[str, int]:
         """Return summary counts used by `ulysses status`."""

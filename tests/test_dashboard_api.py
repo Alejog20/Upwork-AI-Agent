@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -92,6 +92,21 @@ def _mock_prototype_agent() -> AsyncMock:
     return agent
 
 
+def _mock_chat_agent(chunks: list[str] | None = None, *, raises: bool = False) -> MagicMock:
+    agent = MagicMock()
+    agent.stream_calls: list[tuple[list[dict[str, str]], str, str]] = []
+
+    async def _stream(history: list[dict[str, str]], user_message: str, *, system_prompt: str):
+        agent.stream_calls.append((history, user_message, system_prompt))
+        if raises:
+            raise RuntimeError("LLM boom")
+        for chunk in chunks if chunks is not None else ["Mocked ", "reply."]:
+            yield chunk
+
+    agent.stream = _stream
+    return agent
+
+
 @pytest.fixture
 def events() -> DashboardEventBus:
     return DashboardEventBus()
@@ -99,7 +114,14 @@ def events() -> DashboardEventBus:
 
 @pytest.fixture
 def client(db: UlyssesDB, profile: Profile, events: DashboardEventBus) -> TestClient:
-    app = build_dashboard_app(db, profile, _mock_proposal_agent(), _mock_prototype_agent(), events)
+    app = build_dashboard_app(
+        db,
+        profile,
+        _mock_proposal_agent(),
+        _mock_prototype_agent(),
+        events,
+        _mock_chat_agent(),
+    )
     return TestClient(app)
 
 
@@ -119,6 +141,11 @@ class TestListJobs:
         assert summary["skills_required"] == fresh_job.skills_required
         assert summary["recommendation"] == score.recommendation.value
         assert summary["source"] == "email"
+        assert summary["freshness_score"] == score.freshness_score
+        assert summary["proposal_score"] == score.proposal_score
+        assert summary["client_score"] == score.client_score
+        assert summary["skill_score"] == score.skill_score
+        assert summary["budget_score"] == score.budget_score
 
     async def test_filters_by_min_score(
         self, client: TestClient, db: UlyssesDB, fresh_job: JobPost, profile: Profile
@@ -473,6 +500,100 @@ class TestOutcomeRoute:
         assert response.json()["average_connects_spent_per_win"] == 4.0
 
 
+class TestChatMessagesRoutes:
+    async def test_get_messages_on_a_new_thread_returns_empty_list(
+        self, client: TestClient
+    ) -> None:
+        response = client.get("/api/chat/__general__/messages")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_delete_clears_a_thread(self, client: TestClient) -> None:
+        with client.websocket_connect("/ws/chat/__general__") as websocket:
+            websocket.send_json({"message": "hello"})
+            while websocket.receive_json()["type"] != "done":
+                pass
+
+        before = client.get("/api/chat/__general__/messages").json()
+        assert len(before) == 2
+
+        response = client.delete("/api/chat/__general__/messages")
+
+        assert response.status_code == 200
+        assert client.get("/api/chat/__general__/messages").json() == []
+
+
+class TestWebSocketChat:
+    async def test_general_thread_streams_deltas_then_done(self, client: TestClient) -> None:
+        with client.websocket_connect("/ws/chat/__general__") as websocket:
+            websocket.send_json({"message": "hi"})
+            frames = []
+            while True:
+                frame = websocket.receive_json()
+                frames.append(frame)
+                if frame["type"] == "done":
+                    break
+
+        assert frames[0] == {"type": "delta", "text": "Mocked "}
+        assert frames[1] == {"type": "delta", "text": "reply."}
+        assert frames[2] == {"type": "done"}
+
+    async def test_general_thread_persists_both_sides_of_the_turn(self, client: TestClient) -> None:
+        with client.websocket_connect("/ws/chat/__general__") as websocket:
+            websocket.send_json({"message": "hi there"})
+            while websocket.receive_json()["type"] != "done":
+                pass
+
+        messages = client.get("/api/chat/__general__/messages").json()
+        assert [m["role"] for m in messages] == ["user", "assistant"]
+        assert messages[0]["content"] == "hi there"
+        assert messages[1]["content"] == "Mocked reply."
+
+    async def test_per_job_thread_builds_a_job_grounded_system_prompt(
+        self, db: UlyssesDB, profile: Profile, events: DashboardEventBus, fresh_job: JobPost
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        await _seed_scored_job(db, fresh_job, score)
+        chat_agent = _mock_chat_agent()
+        app = build_dashboard_app(
+            db, profile, _mock_proposal_agent(), _mock_prototype_agent(), events, chat_agent
+        )
+        client = TestClient(app)
+
+        with client.websocket_connect(f"/ws/chat/{fresh_job.id}") as websocket:
+            websocket.send_json({"message": "what's the budget?"})
+            while websocket.receive_json()["type"] != "done":
+                pass
+
+        _, _, system_prompt = chat_agent.stream_calls[0]
+        assert fresh_job.title in system_prompt
+        assert str(fresh_job.budget) in system_prompt
+
+    async def test_unknown_job_thread_sends_an_error_and_closes(self, client: TestClient) -> None:
+        with client.websocket_connect("/ws/chat/does-not-exist") as websocket:
+            frame = websocket.receive_json()
+
+        assert frame == {"type": "error", "detail": "Job not found"}
+
+    async def test_stream_failure_sends_an_error_frame_without_persisting_a_reply(
+        self, db: UlyssesDB, profile: Profile, events: DashboardEventBus
+    ) -> None:
+        chat_agent = _mock_chat_agent(raises=True)
+        app = build_dashboard_app(
+            db, profile, _mock_proposal_agent(), _mock_prototype_agent(), events, chat_agent
+        )
+        client = TestClient(app)
+
+        with client.websocket_connect("/ws/chat/__general__") as websocket:
+            websocket.send_json({"message": "hi"})
+            frame = websocket.receive_json()
+
+        assert frame["type"] == "error"
+        messages = client.get("/api/chat/__general__/messages").json()
+        assert [m["role"] for m in messages] == ["user"]
+
+
 class TestWebSocketEvents:
     async def test_receives_a_job_updated_event_triggered_by_an_action(
         self, client: TestClient, db: UlyssesDB, fresh_job: JobPost, profile: Profile
@@ -500,7 +621,7 @@ class TestPlaceholderPage:
         # checkout happens to have a real `dist/` on disk.
         monkeypatch.setattr("ulysses.dashboard.api._FRONTEND_DIST", tmp_path / "does-not-exist")
         app = build_dashboard_app(
-            db, profile, _mock_proposal_agent(), _mock_prototype_agent(), events
+            db, profile, _mock_proposal_agent(), _mock_prototype_agent(), events, _mock_chat_agent()
         )
         client = TestClient(app)
 
@@ -522,7 +643,7 @@ class TestPlaceholderPage:
         (dist / "index.html").write_text("<html><body>the real SPA</body></html>")
         monkeypatch.setattr("ulysses.dashboard.api._FRONTEND_DIST", dist)
         app = build_dashboard_app(
-            db, profile, _mock_proposal_agent(), _mock_prototype_agent(), events
+            db, profile, _mock_proposal_agent(), _mock_prototype_agent(), events, _mock_chat_agent()
         )
         client = TestClient(app)
 

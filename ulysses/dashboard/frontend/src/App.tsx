@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 import { connectEvents, getAnalytics, getStats } from './api'
+import { ChatView } from './components/ChatView'
 import { FollowUpView } from './components/FollowUpView'
 import { InsightsPanel } from './components/InsightsPanel'
 import { JobFeed } from './components/JobFeed'
 import { NextUpCard } from './components/NextUpCard'
 import { StatsBar } from './components/StatsBar'
-import type { Analytics, Stats } from './types'
+import { GENERAL_CHAT_THREAD_ID, type Analytics, type Stats } from './types'
 
-type Tab = 'feed' | 'next-up' | 'followup' | 'insights'
+type Tab = 'feed' | 'next-up' | 'followup' | 'chat' | 'insights'
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('feed')
@@ -58,6 +59,12 @@ export default function App() {
             Needs Follow-Up
           </button>
           <button
+            className={tab === 'chat' ? 'tab tab--active' : 'tab'}
+            onClick={() => setTab('chat')}
+          >
+            Chat
+          </button>
+          <button
             className={tab === 'insights' ? 'tab tab--active' : 'tab'}
             onClick={() => setTab('insights')}
           >
@@ -72,6 +79,7 @@ export default function App() {
         {tab === 'feed' && <JobFeed refreshKey={refreshKey} />}
         {tab === 'next-up' && <NextUpCard refreshKey={refreshKey} />}
         {tab === 'followup' && <FollowUpView refreshKey={refreshKey} />}
+        {tab === 'chat' && <ChatView threadId={GENERAL_CHAT_THREAD_ID} title="Ulysses Copilot" />}
         {tab === 'insights' && <InsightsPanel analytics={analytics} />}
       </main>
     </div>

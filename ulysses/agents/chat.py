@@ -31,6 +31,7 @@ from persona text so both halves are independently testable.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -114,6 +115,45 @@ class ChatAgent:
         )
         response = await ainvoke_with_retry(chat_llm, messages)
         return str(response.content).strip()
+
+    async def stream(
+        self, history: list[dict[str, str]], user_message: str, *, system_prompt: str
+    ) -> AsyncIterator[str]:
+        """Generate the next conversational reply, yielding it as it's produced.
+
+        Same message construction and cost controls as `reply()` -- only the
+        dashboard's live chat uses this (`reply()` keeps serving the CLI/
+        Telegram's single-shot conversations unchanged). Deliberately not
+        wrapped in `ainvoke_with_retry`'s retry logic: retrying a live
+        stream after some chunks were already shown to the user would mean
+        either duplicating or discarding visible output, which looks buggy
+        either way -- a mid-stream failure is left to propagate to the
+        caller instead.
+
+        Args:
+            history: Same as `reply()`.
+            user_message: Same as `reply()`.
+            system_prompt: Same as `reply()`.
+
+        Yields:
+            Successive text chunks of the assistant's reply, in order.
+            Concatenating every yielded chunk reconstructs the full reply
+            (unstripped -- the caller decides how to assemble/display it).
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            *history,
+            {"role": "user", "content": user_message},
+        ]
+        chat_llm = self._llm.bind(
+            max_tokens=_MAX_OUTPUT_TOKENS,
+            thinking={"type": "disabled"},
+            cache_control={"type": "ephemeral"},
+        )
+        async for chunk in chat_llm.astream(messages):
+            text = str(chunk.content)
+            if text:
+                yield text
 
 
 def build_job_context_message(

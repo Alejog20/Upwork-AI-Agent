@@ -318,3 +318,41 @@ class TestDeleteJob:
 
         assert await db.get_job("a") is None
         assert await db.get_job("b") is not None
+
+
+class TestChatMessages:
+    async def test_add_and_get_chat_messages_oldest_first(self, db: UlyssesDB) -> None:
+        await db.add_chat_message("__general__", "user", "hello")
+        await db.add_chat_message("__general__", "assistant", "hi there")
+
+        messages = await db.get_chat_messages("__general__")
+
+        assert [m.content for m in messages] == ["hello", "hi there"]
+        assert [m.role for m in messages] == ["user", "assistant"]
+
+    async def test_threads_are_isolated(self, db: UlyssesDB) -> None:
+        await db.add_chat_message("__general__", "user", "general question")
+        await db.add_chat_message("job-1", "user", "job question")
+
+        general = await db.get_chat_messages("__general__")
+        per_job = await db.get_chat_messages("job-1")
+
+        assert [m.content for m in general] == ["general question"]
+        assert [m.content for m in per_job] == ["job question"]
+
+    async def test_get_chat_messages_returns_empty_list_for_unknown_thread(
+        self, db: UlyssesDB
+    ) -> None:
+        assert await db.get_chat_messages("never-started") == []
+
+    async def test_clear_chat_thread_removes_only_that_thread(self, db: UlyssesDB) -> None:
+        await db.add_chat_message("__general__", "user", "general question")
+        await db.add_chat_message("job-1", "user", "job question")
+
+        await db.clear_chat_thread("__general__")
+
+        assert await db.get_chat_messages("__general__") == []
+        assert len(await db.get_chat_messages("job-1")) == 1
+
+    async def test_clear_chat_thread_on_an_empty_thread_does_not_raise(self, db: UlyssesDB) -> None:
+        await db.clear_chat_thread("never-started")

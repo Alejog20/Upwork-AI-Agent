@@ -32,6 +32,11 @@ export interface JobSummary {
   recommendation?: Recommendation
   best_repo_match?: string | null
   days_since_seen?: number
+  freshness_score?: number
+  proposal_score?: number
+  client_score?: number
+  skill_score?: number
+  budget_score?: number
 }
 
 export interface JobDetail {
@@ -59,3 +64,11 @@ export interface DashboardEvent {
   type: 'job_scored' | 'job_updated'
   job_id: string
 }
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
+
+export const GENERAL_CHAT_THREAD_ID = '__general__'

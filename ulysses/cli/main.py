@@ -318,7 +318,9 @@ def _build_dashboard_server(
     Telegram, no new thread needed (unlike the `rumps` menu bar app, which
     needs a thread only because `rumps` owns the main thread for Cocoa).
     """
-    dashboard_app = build_dashboard_app(db, profile, proposal_agent, prototype_agent, events)
+    dashboard_app = build_dashboard_app(
+        db, profile, proposal_agent, prototype_agent, events, ChatAgent()
+    )
     config = uvicorn.Config(
         dashboard_app,
         host=settings.dashboard_host,

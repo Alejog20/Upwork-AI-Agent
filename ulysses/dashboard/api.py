@@ -16,9 +16,17 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
 from pydantic import BaseModel
 
 from ulysses.actions import archive_job, build_job, draft_job, record_job_outcome, skip_job
+from ulysses.agents.chat import (
+    CHAT_SYSTEM_PROMPT,
+    ChatAgent,
+    build_advisor_profile_summary,
+    build_job_context_message,
+    build_queue_digest,
+)
 from ulysses.agents.proposal import ProposalAgent
 from ulysses.agents.prototype import PrototypeAgent, build_prototype_zip
 from ulysses.config.profile import Profile
@@ -37,6 +45,8 @@ from ulysses.tools.events import DashboardEventBus
 __all__ = ["build_dashboard_app"]
 
 _FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
+_GENERAL_CHAT_THREAD_ID = "__general__"
+_MAX_CHAT_HISTORY_MESSAGES = 12  # ~6 exchanges -- a plain token-cost cap, not a context limit
 
 _PLACEHOLDER_HTML = """
 <!doctype html>
@@ -77,6 +87,7 @@ def build_dashboard_app(
     proposal_agent: ProposalAgent,
     prototype_agent: PrototypeAgent,
     events: DashboardEventBus,
+    chat_agent: ChatAgent,
 ) -> FastAPI:
     """Build the dashboard's FastAPI app, bound to one agent-loop process's dependencies."""
     app = FastAPI(title="Ulysses Dashboard")
@@ -251,6 +262,84 @@ def build_dashboard_app(
             "note": outcome.note,
         }
 
+    @app.get("/api/chat/{thread_id}/messages")
+    async def get_chat_messages(thread_id: str) -> list[dict[str, Any]]:
+        messages = await db.get_chat_messages(thread_id)
+        return [
+            {"role": m.role, "content": m.content, "created_at": m.created_at.isoformat()}
+            for m in messages
+        ]
+
+    @app.delete("/api/chat/{thread_id}/messages")
+    async def delete_chat_messages(thread_id: str) -> dict[str, str]:
+        await db.clear_chat_thread(thread_id)
+        return {"status": "cleared"}
+
+    @app.websocket("/ws/chat/{thread_id}")
+    async def ws_chat(websocket: WebSocket, thread_id: str) -> None:
+        """Stream a chat reply token-by-token, persisting both sides of every turn.
+
+        `thread_id` is either `_GENERAL_CHAT_THREAD_ID` (queue-wide copilot,
+        same context `ulysses advise` builds) or a real job id (a focused
+        conversation about that one job, grounded in its full detail). The
+        system prompt is built once per connection, not per message -- it
+        doesn't change mid-conversation.
+        """
+        await websocket.accept()
+
+        if thread_id == _GENERAL_CHAT_THREAD_ID:
+            system_prompt = "\n\n".join(
+                [
+                    CHAT_SYSTEM_PROMPT,
+                    build_advisor_profile_summary(profile),
+                    build_queue_digest(await db.list_jobs()),
+                ]
+            )
+        else:
+            full = await db.get_full_job(thread_id)
+            if full is None:
+                await websocket.send_json({"type": "error", "detail": "Job not found"})
+                await websocket.close()
+                return
+            job, score = full
+            system_prompt = "\n\n".join(
+                [CHAT_SYSTEM_PROMPT, build_job_context_message(job, score, None, None)]
+            )
+
+        try:
+            while True:
+                payload = await websocket.receive_json()
+                user_message = str(payload.get("message", "")).strip()
+                if not user_message:
+                    continue
+
+                await db.add_chat_message(thread_id, "user", user_message)
+                prior_messages = await db.get_chat_messages(thread_id)
+                history = [{"role": m.role, "content": m.content} for m in prior_messages[:-1]][
+                    -_MAX_CHAT_HISTORY_MESSAGES:
+                ]
+
+                reply_chunks: list[str] = []
+                try:
+                    async for chunk in chat_agent.stream(
+                        history, user_message, system_prompt=system_prompt
+                    ):
+                        reply_chunks.append(chunk)
+                        await websocket.send_json({"type": "delta", "text": chunk})
+                except Exception:
+                    logger.exception("Chat stream failed for thread_id={}", thread_id)
+                    await websocket.send_json(
+                        {"type": "error", "detail": "Something went wrong generating a reply."}
+                    )
+                    continue
+
+                full_reply = "".join(reply_chunks).strip()
+                if full_reply:
+                    await db.add_chat_message(thread_id, "assistant", full_reply)
+                await websocket.send_json({"type": "done"})
+        except WebSocketDisconnect:
+            pass
+
     @app.websocket("/ws/events")
     async def ws_events(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -296,5 +385,10 @@ def _job_summary(job: Job) -> dict[str, Any]:
             red_flags=score.red_flags,
             recommendation=score.recommendation.value,
             best_repo_match=score.matched_repos[0].repo_name if score.matched_repos else None,
+            freshness_score=score.freshness_score,
+            proposal_score=score.proposal_score,
+            client_score=score.client_score,
+            skill_score=score.skill_score,
+            budget_score=score.budget_score,
         )
     return summary

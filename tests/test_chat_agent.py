@@ -30,6 +30,18 @@ def _mock_llm(content: str) -> MagicMock:
     return llm
 
 
+def _mock_streaming_llm(chunks: list[str]) -> MagicMock:
+    llm = MagicMock()
+    llm.bind = MagicMock(return_value=llm)
+
+    async def _chunk_stream():
+        for text in chunks:
+            yield SimpleNamespace(content=text)
+
+    llm.astream = MagicMock(return_value=_chunk_stream())
+    return llm
+
+
 class TestChatAgentReply:
     async def test_returns_stripped_reply_text(self) -> None:
         llm = _mock_llm("  Sure, here's a shorter hook.  ")
@@ -77,6 +89,64 @@ class TestChatAgentReply:
         assert kwargs["cache_control"] == {"type": "ephemeral"}
         assert isinstance(kwargs["max_tokens"], int)
         assert kwargs["max_tokens"] <= 1000
+
+
+class TestChatAgentStream:
+    async def test_yields_chunks_in_order(self) -> None:
+        llm = _mock_streaming_llm(["Hel", "lo", " there"])
+        agent = ChatAgent(llm=llm)
+
+        chunks = [chunk async for chunk in agent.stream([], "hi", system_prompt=CHAT_SYSTEM_PROMPT)]
+
+        assert chunks == ["Hel", "lo", " there"]
+
+    async def test_concatenated_chunks_match_a_full_reply(self) -> None:
+        llm = _mock_streaming_llm(["The answer ", "is 42."])
+        agent = ChatAgent(llm=llm)
+
+        chunks = [chunk async for chunk in agent.stream([], "hi", system_prompt=CHAT_SYSTEM_PROMPT)]
+
+        assert "".join(chunks) == "The answer is 42."
+
+    async def test_sends_system_prompt_then_history_then_new_message(self) -> None:
+        llm = _mock_streaming_llm(["ok"])
+        agent = ChatAgent(llm=llm)
+        history = [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+        ]
+
+        async for _ in agent.stream(history, "second question", system_prompt="PERSONA"):
+            pass
+
+        sent = llm.astream.call_args.args[0]
+        assert sent == [
+            {"role": "system", "content": "PERSONA"},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second question"},
+        ]
+
+    async def test_binds_the_same_cost_control_kwargs_as_reply(self) -> None:
+        llm = _mock_streaming_llm(["ok"])
+        agent = ChatAgent(llm=llm)
+
+        async for _ in agent.stream([], "hi", system_prompt=CHAT_SYSTEM_PROMPT):
+            pass
+
+        _, kwargs = llm.bind.call_args
+        assert kwargs["thinking"] == {"type": "disabled"}
+        assert kwargs["cache_control"] == {"type": "ephemeral"}
+        assert isinstance(kwargs["max_tokens"], int)
+        assert kwargs["max_tokens"] <= 1000
+
+    async def test_skips_empty_chunks(self) -> None:
+        llm = _mock_streaming_llm(["", "Hello", ""])
+        agent = ChatAgent(llm=llm)
+
+        chunks = [chunk async for chunk in agent.stream([], "hi", system_prompt=CHAT_SYSTEM_PROMPT)]
+
+        assert chunks == ["Hello"]
 
 
 class TestBuildJobContextMessage:

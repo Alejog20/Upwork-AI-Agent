@@ -9,6 +9,15 @@ import {
   skipJob,
 } from '../api'
 import type { JobSummary } from '../types'
+import { ChatModal } from './ChatModal'
+
+const SCORE_COMPONENTS: Array<{ key: keyof JobSummary; label: string }> = [
+  { key: 'freshness_score', label: 'Freshness' },
+  { key: 'proposal_score', label: 'Proposals' },
+  { key: 'client_score', label: 'Client' },
+  { key: 'skill_score', label: 'Skills' },
+  { key: 'budget_score', label: 'Budget' },
+]
 
 const RECOMMENDATION_LABEL: Record<string, string> = {
   apply_now: 'APPLY NOW',
@@ -53,6 +62,7 @@ export function JobCard({
   const [draftSaved, setDraftSaved] = useState(false)
   const [builtZip, setBuiltZip] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [chatOpen, setChatOpen] = useState(false)
 
   async function run(action: string, work: () => Promise<void>): Promise<void> {
     setBusy(action)
@@ -172,9 +182,23 @@ export function JobCard({
         >
           ✗ Lost
         </button>
+        <button onClick={() => setChatOpen(true)}>💬 Ask about this</button>
       </div>
 
       {error && <div className="job-card__error">{error}</div>}
+
+      {job.freshness_score !== undefined && (
+        <details className="job-card__breakdown">
+          <summary>Score breakdown</summary>
+          <div className="job-card__breakdown-grid">
+            {SCORE_COMPONENTS.map(({ key, label }) => (
+              <span key={key}>
+                {label}: {Math.round(job[key] as number)}
+              </span>
+            ))}
+          </div>
+        </details>
+      )}
 
       {draftText !== null && (
         <details className="job-card__result" open>
@@ -216,6 +240,10 @@ export function JobCard({
           <summary>Demo prototype built</summary>
           <a href={prototypeZipUrl(job.id)}>Download {builtZip}</a>
         </details>
+      )}
+
+      {chatOpen && (
+        <ChatModal threadId={job.id} title={job.title} onClose={() => setChatOpen(false)} />
       )}
     </div>
   )
