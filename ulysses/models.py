@@ -19,6 +19,7 @@ __all__ = [
     "GeneratedProposal",
     "GeneratedPrototype",
     "GigCategory",
+    "JobNotFoundError",
     "JobPost",
     "JobScore",
     "Milestone",
@@ -154,3 +155,17 @@ class GeneratedPrototype(BaseModel):
     readme_md: str
     config_example_env: str
     zip_filename: str
+
+
+class JobNotFoundError(Exception):
+    """Raised by a shared job-action function when `job_id` has no matching row.
+
+    Deliberately not caught inside the action function itself -- callers
+    (the Telegram handler closures, the dashboard's HTTP routes) each decide
+    how to surface this (a Telegram error message vs. an HTTP 404).
+    """
+
+    def __init__(self, job_id: str) -> None:
+        """Store the unknown `job_id` for the caller to report."""
+        super().__init__(f"No job found for job_id={job_id!r}")
+        self.job_id = job_id

@@ -19,6 +19,7 @@ from pytest_mock import MockerFixture
 from telegram.error import InvalidToken, NetworkError, TimedOut
 from typer.testing import CliRunner
 
+from ulysses.actions import archive_job, build_job, draft_job, record_job_outcome, skip_job
 from ulysses.agents.scorer import score_job
 from ulysses.cli.main import (
     _make_build_handler,
@@ -32,8 +33,17 @@ from ulysses.cli.main import (
 )
 from ulysses.config.profile import DEFAULT_PROFILE_PATH, Profile, load_profile
 from ulysses.config.settings import get_settings
-from ulysses.models import BudgetRange, BudgetType, GeneratedPrototype, JobPost, JobScore, Milestone
+from ulysses.models import (
+    BudgetRange,
+    BudgetType,
+    GeneratedPrototype,
+    JobNotFoundError,
+    JobPost,
+    JobScore,
+    Milestone,
+)
 from ulysses.tools.db import Job, JobStatus, UlyssesDB
+from ulysses.tools.events import DashboardEventBus
 from ulysses.tools.manual_job import ManualJobParseError
 
 runner = CliRunner()
@@ -156,7 +166,7 @@ def _isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     get_settings.cache_clear()
 
 
-async def _seed_job(db_path: Path, **overrides: object) -> None:
+def _job_row_defaults(**overrides: object) -> dict[str, object]:
     job_id = overrides.get("id", "job-1")
     defaults: dict[str, object] = {
         "id": job_id,
@@ -169,9 +179,13 @@ async def _seed_job(db_path: Path, **overrides: object) -> None:
         "posted_at": datetime.now(UTC),
     }
     defaults.update(overrides)
+    return defaults
+
+
+async def _seed_job(db_path: Path, **overrides: object) -> None:
     db = UlyssesDB(db_path)
     await db.init()
-    await db.upsert_job(Job(**defaults))
+    await db.upsert_job(Job(**_job_row_defaults(**overrides)))
     await db.dispose()
 
 
@@ -239,7 +253,7 @@ class TestMakeBuildHandler:
         prototype = _mock_prototype(fresh_job.id)
         prototype_agent.generate = AsyncMock(return_value=prototype)
         notifier = AsyncMock()
-        mocker.patch("ulysses.cli.main.build_prototype_zip", return_value=b"zip-bytes")
+        mocker.patch("ulysses.actions.build_prototype_zip", return_value=b"zip-bytes")
 
         handler = _make_build_handler(db, prototype_agent, notifier, profile)
         await handler(fresh_job.id)
@@ -258,7 +272,178 @@ class TestMakeBuildHandler:
         await handler("unknown-id")
 
         notifier.send_error_message.assert_awaited_once()
-        prototype_agent.generate.assert_not_awaited()
+
+
+class TestDraftJob:
+    """Unit tests for the shared, surface-agnostic `draft_job` function."""
+
+    async def test_drafts_and_persists_for_a_known_job(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=(fresh_job, score))
+        proposal_agent = AsyncMock()
+        proposal_agent.generate = AsyncMock(return_value=_mock_proposal())
+
+        draft = await draft_job(db, proposal_agent, profile, fresh_job.id)
+
+        assert draft.full_text == "Generated proposal text."
+        db.add_proposal_draft.assert_awaited_once_with(fresh_job.id, "Generated proposal text.")
+        db.update_status.assert_awaited_once_with(fresh_job.id, JobStatus.DRAFTED)
+
+    async def test_raises_job_not_found_for_an_unknown_job(self) -> None:
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=None)
+
+        with pytest.raises(JobNotFoundError):
+            await draft_job(db, AsyncMock(), MagicMock(), "unknown-id")
+
+    async def test_broadcasts_job_updated_when_an_event_bus_is_given(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=(fresh_job, score))
+        proposal_agent = AsyncMock()
+        proposal_agent.generate = AsyncMock(return_value=_mock_proposal())
+        events = AsyncMock(spec=DashboardEventBus)
+
+        await draft_job(db, proposal_agent, profile, fresh_job.id, events=events)
+
+        events.broadcast.assert_awaited_once_with({"type": "job_updated", "job_id": fresh_job.id})
+
+
+class TestBuildJob:
+    """Unit tests for the shared, surface-agnostic `build_job` function."""
+
+    async def test_builds_and_persists_for_a_known_job(
+        self, fresh_job: JobPost, profile: Profile, mocker: MockerFixture
+    ) -> None:
+        score = score_job(fresh_job, profile)
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=(fresh_job, score))
+        prototype_agent = AsyncMock()
+        prototype = _mock_prototype(fresh_job.id)
+        prototype_agent.generate = AsyncMock(return_value=prototype)
+        mocker.patch("ulysses.actions.build_prototype_zip", return_value=b"zip-bytes")
+
+        result_prototype, zip_bytes = await build_job(db, prototype_agent, profile, fresh_job.id)
+
+        assert result_prototype is prototype
+        assert zip_bytes == b"zip-bytes"
+        assert db.add_prototype_file.await_count == 4
+        db.update_status.assert_awaited_once_with(fresh_job.id, JobStatus.BUILT)
+
+    async def test_raises_job_not_found_for_an_unknown_job(self) -> None:
+        db = AsyncMock()
+        db.get_full_job = AsyncMock(return_value=None)
+
+        with pytest.raises(JobNotFoundError):
+            await build_job(db, AsyncMock(), MagicMock(), "unknown-id")
+
+
+class TestSkipJob:
+    """Unit tests for the shared `skip_job` function used by the dashboard."""
+
+    async def test_marks_a_known_job_as_skipped(self, fresh_job: JobPost, profile: Profile) -> None:
+        settings = get_settings()
+        score = score_job(fresh_job, profile)
+        await _seed_full_job(settings.db_path, fresh_job, score)
+        db = UlyssesDB(settings.db_path)
+        await db.init()
+        try:
+            job = await skip_job(db, fresh_job.id)
+        finally:
+            await db.dispose()
+
+        assert job.status == JobStatus.SKIPPED
+
+    async def test_raises_job_not_found_for_an_unknown_job(self) -> None:
+        db = AsyncMock()
+        db.get_job = AsyncMock(return_value=None)
+
+        with pytest.raises(JobNotFoundError):
+            await skip_job(db, "unknown-id")
+
+    async def test_broadcasts_job_updated_when_an_event_bus_is_given(self) -> None:
+        db = AsyncMock()
+        db.get_job = AsyncMock(return_value=Job(**_job_row_defaults()))
+        events = AsyncMock(spec=DashboardEventBus)
+
+        await skip_job(db, "job-1", events=events)
+
+        events.broadcast.assert_awaited_once_with({"type": "job_updated", "job_id": "job-1"})
+
+
+class TestArchiveJob:
+    """Unit tests for the shared `archive_job` function used by the dashboard and CLI."""
+
+    async def test_marks_a_known_job_as_archived(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        settings = get_settings()
+        score = score_job(fresh_job, profile)
+        await _seed_full_job(settings.db_path, fresh_job, score)
+        db = UlyssesDB(settings.db_path)
+        await db.init()
+        try:
+            job = await archive_job(db, fresh_job.id)
+        finally:
+            await db.dispose()
+
+        assert job.status == JobStatus.ARCHIVED
+
+    async def test_raises_job_not_found_for_an_unknown_job(self) -> None:
+        db = AsyncMock()
+        db.get_job = AsyncMock(return_value=None)
+
+        with pytest.raises(JobNotFoundError):
+            await archive_job(db, "unknown-id")
+
+
+class TestRecordJobOutcome:
+    """Unit tests for the shared `record_job_outcome` function used by the dashboard and CLI."""
+
+    async def test_records_a_won_outcome_for_a_known_job(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        settings = get_settings()
+        score = score_job(fresh_job, profile)
+        await _seed_full_job(settings.db_path, fresh_job, score)
+        db = UlyssesDB(settings.db_path)
+        await db.init()
+        try:
+            outcome = await record_job_outcome(
+                db, fresh_job.id, won=True, value=500.0, note="great client"
+            )
+        finally:
+            await db.dispose()
+
+        assert outcome.won is True
+        assert outcome.contract_value_usd == 500.0
+
+    async def test_forwards_connects_spent_to_the_db_layer(
+        self, fresh_job: JobPost, profile: Profile
+    ) -> None:
+        settings = get_settings()
+        score = score_job(fresh_job, profile)
+        await _seed_full_job(settings.db_path, fresh_job, score)
+        db = UlyssesDB(settings.db_path)
+        await db.init()
+        try:
+            outcome = await record_job_outcome(db, fresh_job.id, won=True, connects_spent=7)
+        finally:
+            await db.dispose()
+
+        assert outcome.connects_spent == 7
+
+    async def test_raises_job_not_found_for_an_unknown_job(self) -> None:
+        db = AsyncMock()
+        db.get_job = AsyncMock(return_value=None)
+
+        with pytest.raises(JobNotFoundError):
+            await record_job_outcome(db, "unknown-id", won=True)
 
 
 class TestMakeTelegramJobHandler:

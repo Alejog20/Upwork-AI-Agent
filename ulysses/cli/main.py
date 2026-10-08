@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import typer
+import uvicorn
 import yaml
 from loguru import logger
 from rich.console import Console
@@ -18,6 +19,13 @@ from rich.table import Table
 from telegram.error import InvalidToken, NetworkError, RetryAfter
 from telegram.ext import Application
 
+from ulysses.actions import (
+    archive_job,
+    build_job,
+    draft_job,
+    persist_prototype_files,
+    record_job_outcome,
+)
 from ulysses.agents.chat import (
     CHAT_SYSTEM_PROMPT,
     ChatAgent,
@@ -40,10 +48,12 @@ from ulysses.config.profile import (
     set_profile_value,
 )
 from ulysses.config.settings import Settings, get_settings
+from ulysses.dashboard.api import build_dashboard_app
 from ulysses.graph.graph import build_graph
 from ulysses.models import (
     GeneratedProposal,
     GeneratedPrototype,
+    JobNotFoundError,
     JobPost,
     JobScore,
     Milestone,
@@ -58,6 +68,7 @@ from ulysses.tools.analytics import (
 )
 from ulysses.tools.db import Job, JobStatus, UlyssesDB
 from ulysses.tools.email_reader import EmailReader
+from ulysses.tools.events import DashboardEventBus
 from ulysses.tools.launch_agent import install_launch_agent, uninstall_launch_agent
 from ulysses.tools.manual_job import ManualJobParseError, extract_job_from_text
 
@@ -86,7 +97,7 @@ def _configure_logging(settings: Settings) -> None:
 
 def _build_dependencies(
     settings: Settings, profile: Profile
-) -> tuple[UlyssesDB, ScoutAgent, NotifierAgent]:
+) -> tuple[UlyssesDB, ScoutAgent, NotifierAgent, DashboardEventBus]:
     db = UlyssesDB(settings.db_path)
     email_reader = EmailReader(
         host=settings.imap_host,
@@ -96,49 +107,56 @@ def _build_dependencies(
         mailbox=settings.imap_mailbox,
     )
     scout = ScoutAgent(email_reader=email_reader, db=db, profile=profile)
+    events = DashboardEventBus()
     notifier = NotifierAgent(
         bot_token=settings.telegram_bot_token,
         chat_id=settings.telegram_chat_id,
         db=db,
         profile=profile,
+        events=events,
     )
-    return db, scout, notifier
+    return db, scout, notifier, events
 
 
 def _make_draft_handler(
-    db: UlyssesDB, proposal_agent: ProposalAgent, notifier: NotifierAgent, profile: Profile
+    db: UlyssesDB,
+    proposal_agent: ProposalAgent,
+    notifier: NotifierAgent,
+    profile: Profile,
+    events: DashboardEventBus | None = None,
 ) -> Callable[[str], Awaitable[None]]:
     async def on_draft_requested(job_id: str) -> None:
-        full = await db.get_full_job(job_id)
-        if full is None:
+        try:
+            draft = await draft_job(db, proposal_agent, profile, job_id, events=events)
+        except JobNotFoundError:
             logger.warning("Draft requested for unknown or pre-Phase-2 job_id={}", job_id)
             await notifier.send_error_message(
                 "Can't draft this job — it was seen before detailed data was stored."
             )
             return
-        job, score = full
-        draft = await proposal_agent.generate(job, score, profile)
-        await db.add_proposal_draft(job_id, draft.full_text)
         await notifier.send_proposal_draft(job_id, draft.full_text)
 
     return on_draft_requested
 
 
 def _make_build_handler(
-    db: UlyssesDB, prototype_agent: PrototypeAgent, notifier: NotifierAgent, profile: Profile
+    db: UlyssesDB,
+    prototype_agent: PrototypeAgent,
+    notifier: NotifierAgent,
+    profile: Profile,
+    events: DashboardEventBus | None = None,
 ) -> Callable[[str], Awaitable[None]]:
     async def on_build_requested(job_id: str) -> None:
-        full = await db.get_full_job(job_id)
-        if full is None:
+        try:
+            prototype, zip_bytes = await build_job(
+                db, prototype_agent, profile, job_id, events=events
+            )
+        except JobNotFoundError:
             logger.warning("Build requested for unknown or pre-Phase-2 job_id={}", job_id)
             await notifier.send_error_message(
                 "Can't build a demo for this job — it was seen before detailed data was stored."
             )
             return
-        job, score = full
-        prototype = await prototype_agent.generate(job, score, profile)
-        await _persist_prototype_files(db, job_id, prototype)
-        zip_bytes = build_prototype_zip(prototype)
         await notifier.send_prototype_zip(job_id, prototype, zip_bytes)
 
     return on_build_requested
@@ -165,18 +183,6 @@ def _make_telegram_job_handler(
         await notifier.send_job_processed_summary(job, score, proposal, prototype, zip_bytes)
 
     return on_job_text_submitted
-
-
-async def _persist_prototype_files(
-    db: UlyssesDB, job_id: str, prototype: GeneratedPrototype
-) -> None:
-    for filename, content in (
-        ("demo.py", prototype.demo_script),
-        ("requirements.txt", prototype.requirements_txt),
-        ("README.md", prototype.readme_md),
-        ("config.example.env", prototype.config_example_env),
-    ):
-        await db.add_prototype_file(job_id, filename, content)
 
 
 @app.command()
@@ -225,7 +231,7 @@ async def run_forever(
     leaves all three `None`, which preserves the original run-forever,
     never-paused, Telegram-only behavior.
     """
-    db, scout, notifier = _build_dependencies(settings, profile)
+    db, scout, notifier, events = _build_dependencies(settings, profile)
     await db.init()
     if on_instant_alert is not None:
         notifier.set_instant_alert_hook(on_instant_alert)
@@ -233,8 +239,12 @@ async def run_forever(
     proposal_agent = ProposalAgent()
     prototype_agent = PrototypeAgent()
     graph = build_graph(profile, notifier, proposal_agent, prototype_agent, db)
-    notifier.set_draft_handler(_make_draft_handler(db, proposal_agent, notifier, profile))
-    notifier.set_build_handler(_make_build_handler(db, prototype_agent, notifier, profile))
+    notifier.set_draft_handler(
+        _make_draft_handler(db, proposal_agent, notifier, profile, events=events)
+    )
+    notifier.set_build_handler(
+        _make_build_handler(db, prototype_agent, notifier, profile, events=events)
+    )
     notifier.set_job_text_handler(_make_telegram_job_handler(db, profile, notifier))
 
     async def on_scored_job(job: JobPost, score: JobScore) -> None:
@@ -252,6 +262,7 @@ async def run_forever(
                 },
                 config=config,
             )
+            await events.broadcast({"type": "job_scored", "job_id": job.id})
         except Exception:
             logger.exception("Pipeline failed for job_id={}", job.id)
             try:
@@ -266,20 +277,55 @@ async def run_forever(
     telegram_app.add_handler(notifier.help_command_handler)
     telegram_app.add_handler(notifier.message_handler)
 
+    tasks = [
+        scout.run_forever(
+            settings.email_poll_interval_seconds,
+            on_scored_job,
+            stop_event=stop_event,
+            paused_event=paused_event,
+        ),
+        notifier.run_batch_loop(profile.alerts.batch_interval_minutes, stop_event=stop_event),
+    ]
+    dashboard_server: uvicorn.Server | None = None
+    if settings.dashboard_enabled:
+        dashboard_server = _build_dashboard_server(
+            settings, db, profile, proposal_agent, prototype_agent, events
+        )
+        tasks.append(dashboard_server.serve())
+
     try:
         await _start_telegram_with_retry(telegram_app)
-        await asyncio.gather(
-            scout.run_forever(
-                settings.email_poll_interval_seconds,
-                on_scored_job,
-                stop_event=stop_event,
-                paused_event=paused_event,
-            ),
-            notifier.run_batch_loop(profile.alerts.batch_interval_minutes, stop_event=stop_event),
-        )
+        await asyncio.gather(*tasks)
     finally:
+        if dashboard_server is not None:
+            dashboard_server.should_exit = True
         await _shutdown_telegram(telegram_app)
         await db.dispose()
+
+
+def _build_dashboard_server(
+    settings: Settings,
+    db: UlyssesDB,
+    profile: Profile,
+    proposal_agent: ProposalAgent,
+    prototype_agent: PrototypeAgent,
+    events: DashboardEventBus,
+) -> uvicorn.Server:
+    """Build (but don't yet start) the live dashboard's `uvicorn.Server`.
+
+    Its `.serve()` coroutine is added as one more member of `run_forever`'s
+    `asyncio.gather` -- it shares the same event loop as email polling and
+    Telegram, no new thread needed (unlike the `rumps` menu bar app, which
+    needs a thread only because `rumps` owns the main thread for Cocoa).
+    """
+    dashboard_app = build_dashboard_app(db, profile, proposal_agent, prototype_agent, events)
+    config = uvicorn.Config(
+        dashboard_app,
+        host=settings.dashboard_host,
+        port=settings.dashboard_port,
+        log_level="warning",
+    )
+    return uvicorn.Server(config)
 
 
 def _build_telegram_application(settings: Settings) -> Application:
@@ -437,7 +483,7 @@ async def _build_async(settings: Settings, profile: Profile, url: str) -> None:
         prototype_agent = PrototypeAgent()
         with console.status("[bold cyan]Building prototype...[/bold cyan]"):
             generated = await prototype_agent.generate(job, score, profile)
-        await _persist_prototype_files(db, job.id, generated)
+        await persist_prototype_files(db, job.id, generated)
 
         output_dir = _write_prototype_to_disk(generated, job.id)
         console.print(f"[green]Prototype written to {output_dir}[/green]")
@@ -468,7 +514,7 @@ async def _go_async(settings: Settings, profile: Profile, url: str) -> None:
                 prototype_agent.generate(job, score, profile),
             )
         await db.add_proposal_draft(job.id, proposal.full_text)
-        await _persist_prototype_files(db, job.id, prototype)
+        await persist_prototype_files(db, job.id, prototype)
 
         output_dir = _write_prototype_to_disk(prototype, job.id)
         (output_dir / "proposal.txt").write_text(
@@ -627,7 +673,7 @@ async def _process_pasted_job(
                 prototype_agent.generate(job, score, profile),
             )
         await db.add_proposal_draft(job.id, proposal.full_text)
-        await _persist_prototype_files(db, job.id, prototype)
+        await persist_prototype_files(db, job.id, prototype)
 
         output_dir = _write_prototype_to_disk(prototype, job.id)
         (output_dir / "proposal.txt").write_text(
@@ -949,11 +995,11 @@ async def _archive_async(settings: Settings, job_id: str) -> None:
     db = UlyssesDB(settings.db_path)
     await db.init()
     try:
-        job = await db.get_job(job_id)
-        if job is None:
+        try:
+            job = await archive_job(db, job_id)
+        except JobNotFoundError:
             console.print(f"[red]No job found with id:[/red] {job_id}")
-            raise typer.Exit(code=1)
-        await db.update_status(job_id, JobStatus.ARCHIVED)
+            raise typer.Exit(code=1) from None
         console.print(f"[green]Archived:[/green] {job.title}")
     finally:
         await db.dispose()
@@ -992,7 +1038,7 @@ async def _record_outcome_async(
         if job is None:
             console.print(f"[red]No job found with id:[/red] {job_id}")
             raise typer.Exit(code=1)
-        await db.record_outcome(job_id, won=won, contract_value_usd=value, note=note)
+        await record_job_outcome(db, job_id, won=won, value=value, note=note)
         console.print(f"[green]{'Won' if won else 'Lost'}:[/green] {job.title}")
     finally:
         await db.dispose()

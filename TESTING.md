@@ -97,8 +97,10 @@ what the mock says it does, not that the real output reads correctly. See the
     start`, not by simulating `asyncio.gather` over mocked Telegram/IMAP
     clients.
   - `ulysses/cli/main.py::_build_dependencies`,
-    `_build_telegram_application` — plain constructor wiring with no branches
-    worth asserting on.
+    `_build_telegram_application`, `_build_dashboard_server` — plain
+    constructor wiring with no branches worth asserting on. The dashboard's
+    actual routes (`ulysses/dashboard/api.py`) are real HTTP/WS endpoints and
+    are tested directly via `fastapi.testclient.TestClient`.
   - The `rumps`-based menu bar app's native GUI event loop
     (`ulysses/app/menubar.py`) — `rumps` itself isn't mockable in a way that
     proves anything; its testable logic (stats formatting, click handlers)

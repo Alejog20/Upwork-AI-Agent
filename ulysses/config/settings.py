@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # Scout polling
     email_poll_interval_seconds: int = 180
 
+    # Live dashboard (see `ulysses.dashboard.api.build_dashboard_app`)
+    dashboard_enabled: bool = True
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = 8765
+
     @property
     def imap_host(self) -> str:
         """Resolve the IMAP host: an explicit override, or the provider default."""

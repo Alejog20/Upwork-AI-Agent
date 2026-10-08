@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from ulysses.models import GigCategory, JobScore, Recommendation
 from ulysses.tools.analytics import (
+    average_connects_spent_per_win,
     average_score_won_vs_lost,
     scoring_weight_suggestions,
     win_rate_by_category,
@@ -57,10 +58,11 @@ def _pair(
     won: bool,
     category: str = "tier1",
     job_score: JobScore | None = None,
+    connects_spent: int | None = None,
 ) -> tuple[Job, Outcome]:
     score_json = job_score.model_dump_json() if job_score is not None else None
     return _job(job_id, score=score, category=category, score_json=score_json), Outcome(
-        job_id=job_id, won=won
+        job_id=job_id, won=won, connects_spent=connects_spent
     )
 
 
@@ -181,3 +183,33 @@ class TestScoringWeightSuggestions:
         assert suggestions == [
             "No component shows a clear win/loss gap yet -- current weights look reasonable."
         ]
+
+
+class TestAverageConnectsSpentPerWin:
+    def test_averages_connects_spent_across_wins_only(self) -> None:
+        pairs = [
+            _pair("a", score=80, won=True, connects_spent=10),
+            _pair("b", score=80, won=True, connects_spent=20),
+            _pair("c", score=40, won=False, connects_spent=5),
+        ]
+
+        assert average_connects_spent_per_win(pairs) == 15.0
+
+    def test_ignores_wins_with_no_recorded_connects_spent(self) -> None:
+        pairs = [
+            _pair("a", score=80, won=True, connects_spent=10),
+            _pair("b", score=80, won=True, connects_spent=None),
+        ]
+
+        assert average_connects_spent_per_win(pairs) == 10.0
+
+    def test_returns_none_when_no_won_outcome_has_a_recorded_value(self) -> None:
+        pairs = [
+            _pair("a", score=80, won=True, connects_spent=None),
+            _pair("b", score=40, won=False, connects_spent=5),
+        ]
+
+        assert average_connects_spent_per_win(pairs) is None
+
+    def test_returns_none_for_empty_input(self) -> None:
+        assert average_connects_spent_per_win([]) is None

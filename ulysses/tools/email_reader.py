@@ -64,7 +64,7 @@ class EmailReader:
         self._mailbox = mailbox
 
     async def fetch_new_upwork_emails(self) -> list[RawEmail]:
-        """Connect, search for unseen Upwork emails, and return their HTML bodies."""
+        """Connect, search for unseen Upwork job-alert emails, and return their HTML bodies."""
         return await asyncio.to_thread(self._fetch_new_upwork_emails_sync)
 
     @_imap_retry
@@ -74,7 +74,17 @@ class EmailReader:
         try:
             conn.login(self._user, self._app_password)
             conn.select(self._mailbox)
-            status, data = conn.search(None, '(UNSEEN FROM "upwork.com")')
+            # `FROM "upwork.com"` alone also matches every other Upwork
+            # transactional email (messages, payments, milestones, security
+            # alerts) -- all sent from the same `donotreply@upwork.com`
+            # address as real job alerts. None of those ever carry a job
+            # link, so without this they fail `job_parser.parse_job_email`
+            # on every single poll forever (they're fetched via BODY.PEEK,
+            # so they never get marked \Seen and drop out of `UNSEEN`).
+            # Real job-alert subjects always start with "New job alert:" --
+            # confirmed against the live mailbox: this exact filter matches
+            # 100% of real alerts and 0% of everything else.
+            status, data = conn.search(None, '(UNSEEN FROM "upwork.com" SUBJECT "New job alert")')
             if status != "OK":
                 logger.warning("IMAP search returned non-OK status: {}", status)
                 return emails

@@ -44,6 +44,7 @@ from ulysses.agents.chat import (
 from ulysses.config.profile import Profile, ScoringConfig
 from ulysses.models import GeneratedProposal, GeneratedPrototype, JobPost, JobScore, Recommendation
 from ulysses.tools.db import JobStatus, UlyssesDB
+from ulysses.tools.events import DashboardEventBus
 from ulysses.tools.manual_job import ManualJobParseError
 
 __all__ = ["InstantAlertHook", "NotifierAgent", "format_job_message"]
@@ -111,6 +112,7 @@ class NotifierAgent:
         on_build_requested: BuildHandler | None = None,
         on_instant_alert: InstantAlertHook | None = None,
         on_job_text_submitted: JobTextHandler | None = None,
+        events: DashboardEventBus | None = None,
     ) -> None:
         """Create a Notifier Agent bound to one Telegram chat.
 
@@ -139,6 +141,10 @@ class NotifierAgent:
                 job listing -- runs the same extract/score/draft/build
                 pipeline as `ulysses chat`. Can also be set later via
                 `set_job_text_handler`.
+            events: Optional dashboard event bus. When given, a Skip/Archive
+                button press, a sent proposal draft, or a sent prototype zip
+                each broadcast a `job_updated` event, so a live dashboard
+                reflects actions taken from Telegram without polling.
         """
         self._bot = Bot(token=bot_token)
         self._chat_id = str(chat_id)
@@ -149,6 +155,7 @@ class NotifierAgent:
         self._on_build_requested = on_build_requested
         self._on_instant_alert = on_instant_alert
         self._on_job_text_submitted = on_job_text_submitted
+        self._events = events
         self._chat_agent: ChatAgent | None = None
         self._chat_history: list[dict[str, str]] = []
         self._chat_system_prompt: str | None = None
@@ -280,6 +287,8 @@ class NotifierAgent:
         status = _ACTION_STATUS.get(action)
         if status is not None:
             await self._db.update_status(job_id, status)
+            if self._events is not None:
+                await self._events.broadcast({"type": "job_updated", "job_id": job_id})
             logger.bind(job_id=job_id, agent="notifier").info("User action: {}", action)
         elif action in ("draft", "regenerate"):
             await self._request_draft(job_id, action)
@@ -495,6 +504,8 @@ class NotifierAgent:
             reply_markup=keyboard,
         )
         await self._db.update_status(job_id, JobStatus.DRAFTED)
+        if self._events is not None:
+            await self._events.broadcast({"type": "job_updated", "job_id": job_id})
         logger.bind(job_id=job_id, agent="notifier").info("Sent proposal draft to Telegram")
 
     async def send_prototype_zip(
@@ -509,6 +520,8 @@ class NotifierAgent:
         )
         await self._send_message(chat_id=self._chat_id, text=prototype.readme_md)
         await self._db.update_status(job_id, JobStatus.BUILT)
+        if self._events is not None:
+            await self._events.broadcast({"type": "job_updated", "job_id": job_id})
         logger.bind(job_id=job_id, agent="notifier").info("Sent prototype zip to Telegram")
 
     async def send_error_message(self, text: str) -> None:
