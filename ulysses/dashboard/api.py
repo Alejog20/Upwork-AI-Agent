@@ -350,6 +350,22 @@ def build_dashboard_app(
             pass
 
     if _FRONTEND_DIST.is_dir():
+        # `index.html` references content-hashed JS/CSS filenames that
+        # change on every build -- if a browser caches `index.html` itself
+        # (FastAPI's StaticFiles never sends a Cache-Control header, so
+        # browsers fall back to heuristic caching), it keeps requesting the
+        # *old* hashed bundle forever, even after a fresh rebuild and
+        # server restart. Explicitly registered before the mount below so
+        # it wins for the exact `/` path; every other path (the hashed
+        # assets, the icon) still falls through to the mount and is safe
+        # to cache normally. This dashboard has no client-side router (tabs
+        # are plain `useState`), so `/` is the only path that ever needs
+        # this.
+        @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
+        async def index() -> HTMLResponse:
+            html = (_FRONTEND_DIST / "index.html").read_text()
+            return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
         app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
     else:
 

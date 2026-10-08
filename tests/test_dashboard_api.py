@@ -651,3 +651,29 @@ class TestPlaceholderPage:
 
         assert response.status_code == 200
         assert "the real SPA" in response.text
+
+    async def test_index_is_never_cached_by_the_browser(
+        self,
+        db: UlyssesDB,
+        profile: Profile,
+        events: DashboardEventBus,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`index.html` references content-hashed asset filenames that change on
+
+        every build -- if a browser caches it, it keeps requesting a stale
+        bundle forever even after a fresh rebuild and server restart.
+        """
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html><body>the real SPA</body></html>")
+        monkeypatch.setattr("ulysses.dashboard.api._FRONTEND_DIST", dist)
+        app = build_dashboard_app(
+            db, profile, _mock_proposal_agent(), _mock_prototype_agent(), events, _mock_chat_agent()
+        )
+        client = TestClient(app)
+
+        response = client.get("/")
+
+        assert response.headers["cache-control"] == "no-cache"
