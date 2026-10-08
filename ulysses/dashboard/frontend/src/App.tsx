@@ -16,7 +16,8 @@ export default function App() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
-  const [live, setLive] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [pulsing, setPulsing] = useState(false)
 
   useEffect(() => {
     getStats().then(setStats).catch(() => undefined)
@@ -29,19 +30,26 @@ export default function App() {
   }, [tab, refreshKey])
 
   useEffect(() => {
-    const disconnect = connectEvents(() => {
-      setLive(true)
-      setRefreshKey((key) => key + 1)
-      setTimeout(() => setLive(false), 1500)
-    })
+    const disconnect = connectEvents(
+      () => {
+        setPulsing(true)
+        setRefreshKey((key) => key + 1)
+        setTimeout(() => setPulsing(false), 1500)
+      },
+      setConnected,
+    )
     return disconnect
   }, [])
 
   return (
     <div className="app">
       <header className="app__header">
-        <h1>🗺 Ulysses</h1>
-        <span className={`live-dot ${live ? 'live-dot--active' : ''}`} title="Live updates" />
+        <img src="/ulysses-icon.png" alt="" className="app__icon" />
+        <h1>Ulysses</h1>
+        <span
+          className={`live-dot ${connected ? 'live-dot--active' : ''} ${pulsing ? 'live-dot--pulse' : ''}`}
+          title={connected ? 'Connected — listening for new jobs' : 'Disconnected'}
+        />
         <nav className="app__tabs">
           <button className={tab === 'feed' ? 'tab tab--active' : 'tab'} onClick={() => setTab('feed')}>
             Job Feed

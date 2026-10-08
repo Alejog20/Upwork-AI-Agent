@@ -189,7 +189,10 @@ export function connectChat(threadId: string, handlers: ChatStreamHandlers): Cha
  * the dashboard should keep self-healing across a brief backend restart
  * without the user needing to reload the page.
  */
-export function connectEvents(onEvent: (event: DashboardEvent) => void): () => void {
+export function connectEvents(
+  onEvent: (event: DashboardEvent) => void,
+  onConnectionChange?: (connected: boolean) => void,
+): () => void {
   let socket: WebSocket | null = null
   let retryDelayMs = 1000
   let stopped = false
@@ -204,8 +207,10 @@ export function connectEvents(onEvent: (event: DashboardEvent) => void): () => v
     }
     socket.onopen = () => {
       retryDelayMs = 1000
+      onConnectionChange?.(true)
     }
     socket.onclose = () => {
+      onConnectionChange?.(false)
       if (stopped) return
       setTimeout(connect, retryDelayMs)
       retryDelayMs = Math.min(retryDelayMs * 2, 15000)
