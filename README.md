@@ -1,23 +1,30 @@
 # Ulysses
 
 Ulysses is a multi-agent AI ecosystem that monitors your email for new Upwork
-job postings, scores them against your profile, and pushes the good ones to
-Telegram with one-tap actions to draft a proposal or build a demo prototype.
+job postings, scores them against your profile, and pushes the good ones out
+with one-tap actions to draft a proposal or build a demo prototype — across
+three surfaces that all share the same local database and agents: a Telegram
+bot, a CLI, and a live web dashboard.
 
 See `ULYSSES-ARQUITECHTURE.md` for the full system design and `CLAUDE.md` for
 project development standards.
 
-Current status: **Phase 6** — all six agents are live (including a Narrator
-Agent that explains each score in plain language instead of just a number),
-the CLI is complete (`start`, `status`, `draft`, `build`, `go`, `chat`,
-`queue`, `archive`, `won`, `lost`, `analytics`, `config`,
-`install`/`uninstall`), there's a native macOS menu bar app with LaunchAgent
-auto-start, `ulysses chat` lets you paste a job listing straight from the
-Upwork website (no length limit) and run it through the whole pipeline
-without waiting on email, and `ulysses won`/`ulysses lost` feed a win-rate
-analytics dashboard (`ulysses analytics`) that surfaces data-driven
+Current status: **Phase 7** — all six agents are live (including a Narrator
+Agent that explains each score in plain language instead of just a number).
+The Telegram bot takes free-text too, not just button presses: paste a job
+listing straight into the chat, ask it questions about your queue or
+strategy, or use `/job`, `/refresh`, `/help`. The CLI is complete (`start`,
+`status`, `draft`, `build`, `go`, `chat`, `advise`, `queue`, `archive`, `won`,
+`lost`, `analytics`, `config`, `install`/`uninstall`), there's a native macOS
+menu bar app with LaunchAgent auto-start, `ulysses chat` lets you paste a job
+listing straight from the Upwork website (no length limit) and run it
+through the whole pipeline without waiting on email, and `ulysses
+won`/`ulysses lost` feed a win-rate analytics engine (`ulysses analytics`,
+also visualized live in the dashboard) that surfaces data-driven
 scoring-weight suggestions — never applied automatically, always reviewed by
-you first.
+you first. A live web dashboard (see below) now auto-starts alongside the
+agent loop, giving a visual, filterable, always-current view of the job
+queue without needing the terminal or Telegram open.
 
 ## Requirements
 
@@ -88,6 +95,23 @@ chat with inline buttons:
 - **Skip** — marks the job as skipped; you won't be alerted about it again.
 - **Archive** — saves it for later reference in the local database.
 
+The bot also understands plain text, not just button presses — no CLI/SSH
+needed while it's running:
+
+- **Paste a job listing** directly into the chat and it runs through the
+  real pipeline (extract → score → draft → build), exactly like `ulysses
+  chat` — useful for a job you found outside of email alerts.
+- **Ask it anything** about your queue or freelance strategy — it has your
+  profile and recent jobs in context.
+- **`/job <url-or-id>`** — pull one job's full detail into the conversation.
+- **`/refresh`** — re-pull the queue digest.
+- **`/help`** (or `/start`) — a reminder of all of the above, from the bot
+  itself.
+
+A message is treated as a job paste if it's long enough to plausibly be one
+(Upwork postings run to hundreds of characters); if that guess is wrong, it
+silently falls back to a normal chat reply instead of showing an error.
+
 Check on things anytime with:
 
 ```bash
@@ -138,6 +162,14 @@ to wait for each job's LLM calls to finish before pasting the next one in.
 your pasted text with no space (pasted text often has no trailing newline,
 so typing right after a paste can land on the same line) — they're made-up
 words specifically so they won't ever collide with real job-posting text.
+
+Want to talk through your queue or strategy instead of processing a specific
+job? That's `ulysses advise` — the terminal equivalent of the Telegram bot's
+free-text chat, with the same `/job <url-or-id>` and `/refresh` commands:
+
+```bash
+uv run ulysses advise
+```
 
 List or manage jobs directly:
 
@@ -191,6 +223,55 @@ rule. This uses Gemini's native embeddings endpoint directly (a separate
 support embeddings); if retrieval fails for any reason, drafting proceeds
 without a few-shot example rather than failing the whole proposal.
 
+## Dashboard
+
+A live web dashboard starts automatically alongside `uv run ulysses start`
+(and the menu bar app) — no separate command needed. Open it at
+**http://127.0.0.1:8765** while Ulysses is running.
+
+It's a third surface over the same local database and agents the CLI and
+Telegram bot already use — actions taken anywhere (a Telegram button, a
+dashboard click, a CLI command) show up live on every open dashboard tab
+over a WebSocket, no manual refresh needed.
+
+- **Job Feed** — every scored job as a card (score, budget, posted-ago,
+  payment-verified, skills matched, best repo match, red flags, a one-tap
+  "Apply on Upwork" link) with Draft/Build/Skip/Archive/Won/Lost actions.
+  Filter by status, tier, minimum score, source (email alert vs. a job you
+  pasted in manually), "Low competition" (≤5 proposals), or "Has red flags".
+- **Next Up** — a one-at-a-time triage view of your highest-scored new jobs;
+  act on one and the next appears automatically.
+- **Needs Follow-Up** — applications notified/drafted/built more than 5 days
+  ago with no outcome recorded yet, so a proposal never quietly goes cold
+  without you noticing.
+- **Insights** — the same win-rate/scoring-weight analytics as `ulysses
+  analytics`, plus average Connects spent per win (recorded optionally when
+  you mark a job Won).
+- A proposal draft can be edited in place (not just regenerated) and saved
+  back, without leaving the browser.
+
+Settings (in `.env`): `ULYSSES_DASHBOARD_ENABLED` (default `true`),
+`ULYSSES_DASHBOARD_HOST` (default `127.0.0.1`), `ULYSSES_DASHBOARD_PORT`
+(default `8765`). It's localhost-bound by default — same trust model as
+everything else here, since this machine already holds every credential in
+`.env`.
+
+The frontend (`ulysses/dashboard/frontend/`, React + Vite + TypeScript) is
+built once and served as static files — rebuild it after pulling frontend
+changes:
+
+```bash
+cd ulysses/dashboard/frontend
+npm install
+npm run build
+```
+
+If you ever load the dashboard before it's been built, it shows a plain
+"run `npm run build`" placeholder instead of failing — the agent loop itself
+is never affected either way. For active frontend development, run `npm run
+dev` in that directory instead (hot-reloads, proxies `/api`/`/ws` to the
+real backend at port 8765) and open the Vite dev server's own URL.
+
 ## Running 24/7
 
 Install a macOS LaunchAgent so `ulysses start` runs in the background and
@@ -218,6 +299,15 @@ uv run ruff format .
 
 # Tests with coverage
 uv run pytest --cov=ulysses --cov-report=term-missing -v
+```
+
+The dashboard frontend has its own toolchain (not part of the Python test
+suite — see `TESTING.md` for the exact scope split):
+
+```bash
+cd ulysses/dashboard/frontend
+npm run build   # type-checks + bundles
+npm run lint    # oxlint
 ```
 
 ## Privacy
